@@ -505,7 +505,11 @@ list of actions, and a `dismiss` message to remove a card. The panel sends back
 the card's ID and the ID of the action that you clicked. `notch::ask` shows any
 card and waits for the answer, and `notch::approve` is a card with **Decline**
 and **Approve** actions. The `open` tool and custom tools call it before they
-run a command. Cards wait in a queue, and the panel shows the oldest one.
+run a command. The helper doesn't wait for the answer: it starts a task that
+waits for approval, runs the command, and reports the result, and then goes on
+to the next request. A declined or unanswered card reports nothing. The panel
+shows the newest card first, and a second card for the same command is dropped
+while the first one waits.
 
 The panel registers its keyboard shortcuts as Carbon hot keys, which work in
 any app and don't need the Accessibility permission. When the mute state

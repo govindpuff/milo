@@ -67,6 +67,9 @@ shows the exact command. To let it run, click **Approve**. To stop it, click
 **Decline**. If you don't answer within 45 seconds, milo doesn't run the
 command.
 
+You can keep talking while a command waits. If you ask for something else, the
+panel shows the newest command first, and the older ones wait behind it.
+
 The following keyboard shortcuts work in any app:
 
 | Shortcut | Action |
