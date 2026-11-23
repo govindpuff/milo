@@ -179,10 +179,7 @@ struct Args {
     tts_port: u16,
     #[arg(long, help = "Turn off echo cancellation, for use with headphones")]
     no_aec: bool,
-    #[arg(
-        long,
-        help = "Don't let the voice do things (weather, lookups, timers, opening apps, notes, your own commands)"
-    )]
+    #[arg(long, help = "Don't let the voice do things (weather, timers, opening apps, notes, your own commands)")]
     no_tools: bool,
     #[arg(long, value_name = "FILE", help = "Use the system prompt in FILE instead of the built-in one")]
     system_prompt: Option<PathBuf>,

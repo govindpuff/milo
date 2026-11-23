@@ -3,8 +3,8 @@
 milo is a voice assistant that runs entirely on your Mac. You talk, and it talks
 back, like a phone call. It starts preparing an answer before you finish
 speaking, you can talk over it to interrupt, and it makes small listening
-sounds, such as "mm-hmm," while you talk. It can also check the weather, look
-things up, set timers, open apps, and remember what you tell it.
+sounds, such as "mm-hmm," while you talk. It can also check the weather, set
+timers, open apps, and remember what you tell it.
 
 ## Requirements
 
@@ -47,7 +47,6 @@ To quit, press Control+C.
 
 - "What's the weather in Chicago?"
 - "Set a timer for two minutes."
-- "Who was Ada Lovelace?"
 - "Open Safari."
 - "Remember that my sister's name is Priya."
 - Talk over milo to interrupt it.

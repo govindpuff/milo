@@ -392,12 +392,8 @@ The following rules shorten or skip the report:
   something.
 - If the first step calls no tool and milo promised something, the report says
   that nothing was done.
-- A call to `lookup` runs only if milo promised something. When milo answers
-  a question itself, nothing is looked up.
-- If the model rejects what `lookup` found, the report says that nothing was
-  found. The rejected text isn't passed on.
 
-The `weather` and `lookup` tools time out after 8 seconds. The `open` tool and
+The `weather` tool times out after 8 seconds. The `open` tool and
 the commands from `tools.json` time out after 20 seconds, and so does each
 model call. Tool results are cut to 700 characters.
 
