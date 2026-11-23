@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow, bail};
 use llm::{Call, Llm, Message};
 use serde_json::{Map, Value, json};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::controller::Event;
@@ -19,6 +20,9 @@ const YIELD_MAX: Duration = Duration::from_secs(4);
 const SCREEN: &str = "\n\nThe screen now:\n";
 const STOP: &str = "stop";
 const TYPED_CHARS: usize = 400;
+const SAME: &str = "Nothing on the screen changed, so that did nothing. Do not repeat it. Try a different way, like a key, a menu item or another control.";
+const IDLE: &str = "nothing is being done on their computer right now";
+const HALTED: &str = "stopped what was being done on their computer";
 pub const BUSY: &str = "something else is still being done on their computer; it has to finish or be stopped first";
 
 const PROMPT: &str = "You operate a person's Mac for them. They approved the plan below, and you carry it out one action at a time.
@@ -36,9 +40,11 @@ Rules:
 - look shows the screen again. Use it when something is still loading.
 - If an action fails or the screen did not change the way you expected, try another way, like a menu item or a key instead of a click.
 - If you cannot finish after trying, stop and say what got in the way.
+- Before you finish, check that the latest screen shows the plan is done. Typing in a search box or seeing a result listed is not the same as having opened it. If the screen does not show it, keep going or say it did not work.
 - When the plan is done, do not call a tool. Write one or two short plain sentences that Milo will say out loud: what was done, or what you found if they asked for information. Take every fact from the screen.";
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static HALT: Notify = Notify::const_new();
 
 struct Running;
 
@@ -50,6 +56,14 @@ impl Drop for Running {
 
 pub fn running() -> bool {
     RUNNING.load(Relaxed)
+}
+
+pub fn halt() -> Result<String> {
+    if !running() {
+        bail!(IDLE);
+    }
+    HALT.notify_waiters();
+    Ok(HALTED.to_string())
 }
 
 fn schema() -> Value {
@@ -126,7 +140,7 @@ fn whole(args: &Map<String, Value>) -> Option<u64> {
     }
 }
 
-async fn step(call: &Call) -> (String, String) {
+async fn step(call: &Call, before: &str) -> (String, String) {
     let text = |key: &str| call.args.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let mut wait = SETTLE;
     let did = match call.name.as_str() {
@@ -141,9 +155,21 @@ async fn step(call: &Call) -> (String, String) {
         }
         _ => Err("there is no such tool".to_string()),
     };
-    let did = did.unwrap_or_else(|e| format!("{} failed: {e}", call.name));
+    let failed = did.is_err();
+    let mut did = did.unwrap_or_else(|e| format!("{} failed: {e}", call.name));
     tokio::time::sleep(wait).await;
-    (did.clone(), format!("{did}{SCREEN}{}", screen().await))
+    let mut after = screen().await;
+    if call.name == "click" && !failed && after == before {
+        let real = control(json!({ "op": "click", "number": whole(&call.args), "real": true })).await;
+        if real.is_ok() {
+            tokio::time::sleep(wait).await;
+            after = screen().await;
+        }
+    }
+    if call.name != "look" && after == before {
+        did = format!("{did}. {SAME}");
+    }
+    (did, after)
 }
 
 fn card(task: &str, doing: &str) -> notch::Card {
@@ -173,6 +199,7 @@ async fn drive(
         )),
     ];
     let mut typed: Vec<String> = Vec::new();
+    let mut before = first.clone();
     for _ in 0..MAX_STEPS {
         let waited = Instant::now();
         while talking.load(Relaxed) && waited.elapsed() < YIELD_MAX {
@@ -191,11 +218,13 @@ async fn drive(
         };
         let _ = events.send(Event::Doing(format!("{} {}", call.name, Value::Object(call.args.clone()))));
         messages.push(Message::called(std::slice::from_ref(&call)));
-        let (did, result) = step(&call).await;
+        let (did, now) = step(&call, &before).await;
+        let result = format!("{did}{SCREEN}{now}");
+        before = now;
         if call.name == "type" && !did.contains("failed") {
             typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));
         }
-        notch::revise(id, &card(task, &did));
+        notch::revise(id, &card(task, did.split(". Nothing").next().unwrap_or(&did)));
         for m in messages.iter_mut() {
             if let Some(at) = m.content.find(SCREEN) {
                 m.content.truncate(at);
@@ -227,6 +256,7 @@ pub async fn run(
             Err(_) => Err(anyhow!("it took too long and was stopped before finishing {task}")),
         },
         _ = stopped => Ok(None),
+        _ = HALT.notified() => Ok(None),
     };
     notch::dismiss(id);
     out

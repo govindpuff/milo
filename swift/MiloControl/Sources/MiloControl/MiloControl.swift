@@ -286,6 +286,10 @@ func tap(_ element: AXUIElement) throws {
 func click(_ request: [String: Any]) throws -> String {
     let (element, label) = try target(request)
     let role = kind(element)
+    if (request["real"] as? Bool) == true {
+        try tap(element)
+        return "clicked \(label)"
+    }
     if inputs.contains(role) {
         if AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) != .success {
             try tap(element)
