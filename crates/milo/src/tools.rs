@@ -16,6 +16,7 @@ use crate::controller::Event;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(45);
+const ASKED: &str = "asked them to approve it on their screen; it runs if they approve";
 const RESULT_CHARS: usize = 700;
 const DONE_KEPT: usize = 4;
 const DONE_CHARS: usize = 90;
@@ -48,6 +49,17 @@ After a tool answers:
 - When you have what they asked for, stop calling tools and write one or two short plain sentences that Milo will say to them: only the facts they asked for, taken from the tool results, nothing else.
 - If the results do not contain what they asked for, say that in one sentence. Never fill a gap from memory.
 - If it could not be done, say what went wrong in one sentence.";
+
+#[derive(Debug)]
+struct Skipped;
+
+impl std::fmt::Display for Skipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("they did not approve it on their screen")
+    }
+}
+
+impl std::error::Error for Skipped {}
 
 enum Kind {
     Weather,
@@ -197,22 +209,42 @@ impl Tools {
         self.list.iter().any(|t| t.name == name && matches!(t.kind, Kind::Remember))
     }
 
-    async fn run(&self, call: &Call) -> (String, bool) {
-        let Some(t) = self.list.iter().find(|t| t.name == call.name) else {
-            return (format!("{} failed: there is no such tool", call.name), false);
-        };
-        let done = match &t.kind {
+    fn gated(&self, name: &str) -> bool {
+        notch::on() && self.list.iter().any(|t| t.name == name && matches!(t.kind, Kind::Open | Kind::Command(_)))
+    }
+
+    async fn attempt(&self, call: &Call) -> Result<String> {
+        let Some(t) = self.list.iter().find(|t| t.name == call.name) else { bail!("there is no such tool") };
+        match &t.kind {
             Kind::Weather => self.weather(&call.args).await,
             Kind::Timer => self.timer(&call.args),
             Kind::Open => open(&call.args).await,
             Kind::Remember => remember(&call.args),
             Kind::Forget => forget(&call.args),
             Kind::Command(argv) => command(t, argv, &call.args).await,
-        };
-        match done {
-            Ok(text) => (clip(&text), true),
-            Err(e) => (format!("{} failed: {}", t.name, clip(&format!("{e:#}"))), false),
         }
+    }
+
+    async fn run(&self, call: &Call) -> (String, bool) {
+        match self.attempt(call).await {
+            Ok(text) => (clip(&text), true),
+            Err(e) => (format!("{} failed: {}", call.name, clip(&format!("{e:#}"))), false),
+        }
+    }
+
+    fn later(self: Arc<Self>, call: Call) {
+        tokio::spawn(async move {
+            match self.attempt(&call).await {
+                Ok(text) => {
+                    let _ = self.events.send(Event::Aside(clip(&text)));
+                }
+                Err(e) if e.is::<Skipped>() => {}
+                Err(e) => {
+                    let _ =
+                        self.events.send(Event::Aside(format!("{} failed: {}", call.name, clip(&format!("{e:#}")))));
+                }
+            }
+        });
     }
 
     async fn get(&self, url: &str) -> Result<Value> {
@@ -339,8 +371,7 @@ async fn allow(title: &str, detail: &str) -> Result<()> {
     }
     match notch::approve(title, detail, APPROVE_TIMEOUT).await {
         Some(true) => Ok(()),
-        Some(false) => bail!("they declined it on their screen"),
-        None => bail!("they did not approve it on their screen in time"),
+        _ => Err(Skipped.into()),
     }
 }
 
@@ -553,6 +584,13 @@ pub struct Look {
     pub promised: bool,
 }
 
+fn note(done: &mut VecDeque<(Instant, String, String)>, call: String, result: String) {
+    done.push_back((Instant::now(), call, result));
+    if done.len() > DONE_KEPT {
+        done.pop_front();
+    }
+}
+
 pub fn spawn(
     llm: Llm,
     tools: Arc<Tools>,
@@ -635,8 +673,16 @@ async fn work(
             busy.store(true, Relaxed);
             messages.push(Message::called(&calls));
             let mut direct = step == 0 && calls.len() == 1;
+            let mut asked = false;
             for call in &calls {
                 let shown = format!("{} {}", call.name, Value::Object(call.args.clone()));
+                if tools.gated(&call.name) {
+                    let _ = events.send(Event::Doing(shown.clone()));
+                    note(&mut done, shown, ASKED.to_string());
+                    tools.clone().later(call.clone());
+                    asked = true;
+                    continue;
+                }
                 let (text, ok) = if tried.contains(&shown) {
                     (
                         "you already tried exactly this and it gave the same result; try something different or finish"
@@ -646,10 +692,7 @@ async fn work(
                 } else {
                     let _ = events.send(Event::Doing(shown.clone()));
                     let out = tools.run(call).await;
-                    done.push_back((Instant::now(), shown.clone(), out.0.clone()));
-                    if done.len() > DONE_KEPT {
-                        done.pop_front();
-                    }
+                    note(&mut done, shown.clone(), out.0.clone());
                     last = Some(out.0.clone());
                     out
                 };
@@ -657,6 +700,10 @@ async fn work(
                 direct &= ok && tools.direct(&call.name);
                 hushed &= ok && tools.quiet(&call.name);
                 messages.push(Message::tool(&call.id, text));
+            }
+            if asked {
+                report = last.clone();
+                break;
             }
             if direct || step + 1 == MAX_STEPS {
                 report = if hushed && !look.promised { None } else { last.clone() };
