@@ -16,6 +16,19 @@ const GLOBAL_FLAGS: &[&str] = &["--no-banner", "--no-telemetry", "--disable-vers
 const SERVE_FLAGS: &[&str] =
     &["--host", "127.0.0.1", "--disable-disk-caches", "--stream-interval", "1", "--hybrid-cache-entries", "16"];
 
+const CACHE_ENV: &str = "RAPID_MLX_PREFIX_CACHE_MAX_BYTES";
+const CACHE_SHARE: u64 = 8;
+const MEMORY_FALLBACK: u64 = 16 << 30;
+
+fn memory() -> u64 {
+    let mut bytes: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    let ok = unsafe {
+        libc::sysctlbyname(c"hw.memsize".as_ptr(), (&raw mut bytes).cast(), &mut len, std::ptr::null_mut(), 0) == 0
+    };
+    if ok && bytes > 0 { bytes } else { MEMORY_FALLBACK }
+}
+
 pub struct ServerGuard {
     child: Child,
 }
@@ -67,6 +80,7 @@ pub fn ensure_running(model: &str, port: u16) -> Result<Option<ServerGuard>> {
         .args(SERVE_FLAGS)
         .args(["--watchdog-ppid", &ppid])
         .env("RAPID_MLX_TELEMETRY", "0")
+        .env(CACHE_ENV, std::env::var(CACHE_ENV).unwrap_or_else(|_| (memory() / CACHE_SHARE).to_string()))
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
