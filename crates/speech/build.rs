@@ -2,8 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const TOOLCHAIN: &str =
-    "MiloSpeech needs Swift 6.2 or newer: install Xcode 26 or the Command Line Tools (xcode-select --install)";
+const TOOLCHAIN: &str = "If this is a toolchain error: MiloSpeech needs Swift 6.2 or newer (Xcode 26 or the Command Line Tools, xcode-select --install). If the repository was moved, delete swift/MiloSpeech/.build and build again.";
 
 fn run(cmd: &mut Command) -> String {
     let out = cmd.output().unwrap_or_else(|e| panic!("failed to run {cmd:?}: {e}\n{TOOLCHAIN}"));
