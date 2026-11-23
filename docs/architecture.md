@@ -20,7 +20,7 @@ audio input callback                                 audio output callback
     v                                                     v            |
 capture thread <------------------------------------------+            |
     |                            |                                     |
-    | mic + echo reference       | mic                                 |
+    | mic + echo reference       | mic, or mic with echo removed       |
     v                            v                                     |
 speech: echo removal,        turn: voice activity,                     |
 streaming recognition        Smart Turn, second pass                   |
@@ -66,12 +66,16 @@ milo runs the following threads, tasks, and processes:
   allocation, locks, or logging.
 - **Capture thread.** Reads 20 ms blocks of 16 kHz mono microphone audio, each
   paired with the time-aligned echo reference. It pushes each block to the
-  speech recognizer and to the turn detector, and records an audio clock that
-  maps recognizer timestamps to wall-clock time. The detector runs Silero VAD
-  on this thread.
+  speech recognizer, and records an audio clock that maps recognizer timestamps
+  to wall-clock time. With `--no-aec`, it also pushes each block to the turn
+  detector, which runs Silero VAD on this thread.
 - **Speech task.** Inside MiloSpeech, one Swift task passes the pushed audio
   through LocalVQE and the streaming recognizer, and calls back into Rust with
-  partial transcripts and end-of-utterance events.
+  partial transcripts, end-of-utterance events, and the audio with the echo
+  removed.
+- **Detect thread.** With echo cancellation on, feeds the audio with the echo
+  removed to the turn detector, so that voice activity, Smart Turn, and the
+  second pass don't hear milo's own voice.
 - **Turn thread.** Runs Smart Turn when a voice segment ends.
 - **Refine thread.** Runs the second-pass transcription.
 - **Voice thread.** Takes synthesis jobs from a channel one at a time, and

@@ -4,6 +4,8 @@ import Foundation
 
 public typealias MiloEventCallback = @convention(c) (UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?, Int64) -> Void
 
+public typealias MiloAudioCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<Float>?, Int) -> Void
+
 private let eventPartial: Int32 = 0
 private let eventEou: Int32 = 1
 private let eventWarning: Int32 = 2
@@ -18,10 +20,16 @@ struct MiloError: LocalizedError {
 
 struct EventSink: @unchecked Sendable {
     let callback: MiloEventCallback
+    let cleaned: MiloAudioCallback?
     let context: UnsafeMutableRawPointer?
 
     func emit(_ kind: Int32, _ text: String, _ ms: Int64 = -1) {
         text.withCString { callback(context, kind, $0, ms) }
+    }
+
+    func emit(cleaned samples: [Float]) {
+        guard let cleaned, !samples.isEmpty else { return }
+        samples.withUnsafeBufferPointer { cleaned(context, $0.baseAddress, $0.count) }
     }
 }
 
@@ -261,6 +269,7 @@ final class Session: @unchecked Sendable {
             var audio = batch.mic
             if let vqe {
                 audio = try await vqe.enhance(mic: batch.mic, reference: batch.reference)
+                sink.emit(cleaned: audio)
             }
             guard !audio.isEmpty, let buffer = makeBuffer(audio) else { return }
             _ = try await asr.process(audioBuffer: buffer)
@@ -290,10 +299,11 @@ public func milo_speech_start(
     _ aec: Bool,
     _ secondPass: Bool,
     _ callback: MiloEventCallback,
+    _ cleaned: MiloAudioCallback?,
     _ context: UnsafeMutableRawPointer?,
     _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> UnsafeMutableRawPointer? {
-    let sink = EventSink(callback: callback, context: context)
+    let sink = EventSink(callback: callback, cleaned: cleaned, context: context)
     let result = StartResult()
     let ready = DispatchSemaphore(value: 0)
     Task.detached {

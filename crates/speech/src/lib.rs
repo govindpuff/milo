@@ -18,8 +18,16 @@ pub enum SpeechEvent {
     Eou { text: String, speech_end_ms: Option<u64> },
 }
 
-type Handler = Box<dyn Fn(SpeechEvent) + Send + Sync>;
+pub type OnEvent = Box<dyn Fn(SpeechEvent) + Send + Sync>;
+pub type OnCleaned = Box<dyn Fn(&[f32]) + Send + Sync>;
+
+struct Handler {
+    event: OnEvent,
+    cleaned: Option<OnCleaned>,
+}
+
 type EventFn = extern "C" fn(*mut c_void, i32, *const c_char, i64);
+type AudioFn = extern "C" fn(*mut c_void, *const f32, usize);
 
 unsafe extern "C" {
     fn milo_speech_start(
@@ -28,6 +36,7 @@ unsafe extern "C" {
         aec: bool,
         second_pass: bool,
         callback: EventFn,
+        cleaned: Option<AudioFn>,
         context: *mut c_void,
         error: *mut *mut c_char,
     ) -> *mut c_void;
@@ -57,8 +66,20 @@ extern "C" fn trampoline(context: *mut c_void, kind: i32, text: *const c_char, m
             return;
         }
     };
-    if catch_unwind(AssertUnwindSafe(|| handler(event))).is_err() {
+    if catch_unwind(AssertUnwindSafe(|| (handler.event)(event))).is_err() {
         log::error!("speech event handler panicked");
+    }
+}
+
+extern "C" fn cleaned_trampoline(context: *mut c_void, samples: *const f32, len: usize) {
+    let handler = unsafe { &*(context as *const Handler) };
+    let Some(cleaned) = &handler.cleaned else { return };
+    if samples.is_null() || len == 0 {
+        return;
+    }
+    let audio = unsafe { std::slice::from_raw_parts(samples, len) };
+    if catch_unwind(AssertUnwindSafe(|| cleaned(audio))).is_err() {
+        log::error!("cleaned audio handler panicked");
     }
 }
 
@@ -72,8 +93,9 @@ unsafe impl Send for Speech {}
 unsafe impl Sync for Speech {}
 
 impl Speech {
-    pub fn start(cfg: SpeechConfig, on_event: Box<dyn Fn(SpeechEvent) + Send + Sync>) -> Result<Speech> {
-        let handler = Box::into_raw(Box::new(on_event));
+    pub fn start(cfg: SpeechConfig, on_event: OnEvent, on_cleaned: Option<OnCleaned>) -> Result<Speech> {
+        let cleaned = on_cleaned.is_some().then_some(cleaned_trampoline as AudioFn);
+        let handler = Box::into_raw(Box::new(Handler { event: on_event, cleaned: on_cleaned }));
         let mut error: *mut c_char = ptr::null_mut();
         let handle = unsafe {
             milo_speech_start(
@@ -82,6 +104,7 @@ impl Speech {
                 cfg.aec,
                 cfg.second_pass,
                 trampoline,
+                cleaned,
                 handler.cast(),
                 &mut error,
             )

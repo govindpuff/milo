@@ -293,6 +293,13 @@ fn main() -> Result<()> {
         SpeechConfig { chunk_ms: args.chunk_ms, eou_debounce_ms: args.eou_debounce_ms, aec: !args.no_aec, second_pass };
     let base_url = args.llm_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}/v1", args.port));
 
+    let (cleaned_tx, cleaned_rx) = if speech_cfg.aec && !args.no_smart_turn {
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<f32>>();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
     let (server, speech, engine) = thread::scope(|s| {
         let server = s.spawn(|| match args.llm_url {
             Some(_) => Ok(None),
@@ -305,6 +312,11 @@ fn main() -> Result<()> {
                 speech_cfg,
                 Box::new(move |ev| {
                     let _ = tx.send(Event::Speech(ev, Instant::now()));
+                }),
+                cleaned_tx.map(|tx| {
+                    Box::new(move |audio: &[f32]| {
+                        let _ = tx.send(audio.to_vec());
+                    }) as speech::OnCleaned
                 }),
             )?;
             log::info!("speech ready after {:.1}s", t.elapsed().as_secs_f32());
@@ -365,7 +377,8 @@ fn main() -> Result<()> {
         tts_rate: engine.sample_rate(),
     })?;
     let clock = Arc::new(AudioClock::new());
-    let capture_thread = capture::spawn(capture, speech.clone(), clock.clone(), detector, events_tx.clone())?;
+    let capture_thread =
+        capture::spawn(capture, speech.clone(), clock.clone(), detector, cleaned_rx, events_tx.clone())?;
     let gate = Arc::new(Gate::new(playback.clone(), engine.sample_rate()));
     let sounds = engine.sounds();
     let voice_id = match &engine {
