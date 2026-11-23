@@ -21,19 +21,43 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     pub role: Role,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     tool_calls: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+}
+
+impl Serialize for Message {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("role", &self.role)?;
+        match &self.image {
+            Some(image) => map.serialize_entry(
+                "content",
+                &serde_json::json!([
+                    { "type": "text", "text": self.content },
+                    { "type": "image_url", "image_url": { "url": format!("data:image/jpeg;base64,{image}") } },
+                ]),
+            )?,
+            None => map.serialize_entry("content", &self.content)?,
+        }
+        if let Some(calls) = &self.tool_calls {
+            map.serialize_entry("tool_calls", calls)?;
+        }
+        if let Some(id) = &self.tool_call_id {
+            map.serialize_entry("tool_call_id", id)?;
+        }
+        map.end()
+    }
 }
 
 impl Message {
     fn new(role: Role, content: impl Into<String>) -> Self {
-        Self { role, content: content.into(), tool_calls: None, tool_call_id: None }
+        Self { role, content: content.into(), image: None, tool_calls: None, tool_call_id: None }
     }
 
     pub fn called(calls: &[Call]) -> Self {
@@ -60,6 +84,10 @@ impl Message {
 
     pub fn user(content: impl Into<String>) -> Self {
         Self::new(Role::User, content)
+    }
+
+    pub fn seen(content: impl Into<String>, image: Option<String>) -> Self {
+        Self { image, ..Self::new(Role::User, content) }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -285,7 +313,7 @@ impl Llm {
 const REPLY_TOKENS: u32 = 1200;
 const TEMPERATURE: f32 = 0.7;
 const ACT_TOKENS: u32 = 320;
-const ACT_TIMEOUT: Duration = Duration::from_secs(20);
+const ACT_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn parse_call(name: &serde_json::Value, args: &serde_json::Value) -> Option<Call> {
     let name = name.as_str()?.trim();
