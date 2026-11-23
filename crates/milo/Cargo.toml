@@ -1,0 +1,24 @@
+[package]
+name = "milo"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+audio = { path = "../audio" }
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+futures-util = "0.3"
+jiff = "0.2"
+llm = { path = "../llm" }
+log = "0.4"
+phonon = { path = "../phonon" }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+serde_json = "1"
+speech = { path = "../speech" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "process"] }
+turn = { path = "../turn" }
+voice = { path = "../voice" }
