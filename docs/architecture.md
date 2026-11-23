@@ -515,13 +515,16 @@ The loop works as follows:
    process as key events. Key combinations go through the system event stream,
    so system shortcuts work.
 3. milo waits for the app to settle, reads the window again, and returns the
-   result and the new screen. Only the newest screen stays in the operator's
+   result and the new screen. If a click leaves the screen exactly as it was,
+   milo repeats it as a mouse click, because some apps report success for an
+   Accessibility action that they ignore. If an action still changes nothing,
+   the result says so, and tells the operator to try another way. Only the newest screen stays in the operator's
    messages, so the prompt doesn't grow with every step.
 
 The loop ends when the operator replies without a tool call. That reply comes
 back the same way as any other tool result. The loop also ends after 30 steps
-or four minutes, or when you click **Stop** on the card that shows the last
-action. A stopped plan reports nothing.
+or four minutes, when you click **Stop** on the card that shows the last
+action, or when the tool agent calls its `stop` tool because you said to stop. A stopped plan reports nothing.
 
 For Chromium and Electron apps, milo sets the `AXEnhancedUserInterface` and
 `AXManualAccessibility` attributes on the app, which makes them build their

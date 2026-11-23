@@ -100,7 +100,7 @@ website.
     whole plan, click **Approve**, or press Control+Option+Y. milo doesn't ask
     again for each step.
 4.  While milo works, the panel shows the last thing that it did. To stop it,
-    click **Stop**, or press Control+Option+N.
+    click **Stop**, press Control+Option+N, or tell milo to stop.
 
 When milo finishes, it tells you what it did. milo works on one plan at a time,
 and stops a plan that takes longer than four minutes.
