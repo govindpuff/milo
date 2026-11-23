@@ -67,6 +67,19 @@ shows the exact command. To let it run, click **Approve**. To stop it, click
 **Decline**. If you don't answer within 45 seconds, milo doesn't run the
 command.
 
+The following keyboard shortcuts work in any app:
+
+| Shortcut | Action |
+|---|---|
+| Control+Option+Y | Approves the command in the panel. |
+| Control+Option+N | Declines the command in the panel. |
+| Control+Option+M | Mutes or unmutes your microphone. |
+| Control+Option+Space | Unmutes your microphone while you hold the keys, and mutes it when you release them. |
+
+To use milo like a walkie-talkie, start it with `milo --push-to-talk`. Your
+microphone starts muted, and milo hears you only while you hold
+Control+Option+Space.
+
 To turn off the panel, start milo with `milo --no-notch`. milo then runs
 commands without asking.
 
@@ -159,6 +172,7 @@ doesn't support tool calls, add `--no-tools`.
 | `--tts` | The voice engine: `breeze` (the default), or `phonon`, which is smaller and faster but less natural. |
 | `--tts-port` | The port for the voice. The default is `8881`. |
 | `--no-aec` | Turns off echo cancellation. Use it with headphones. |
+| `--push-to-talk` | Starts with your microphone muted. To talk, hold Control+Option+Space. |
 | `--no-notch` | Turns off the panel in the notch. milo then runs commands without asking. |
 | `--no-tools` | Turns off tools and memory. |
 | `--no-backchannel` | Turns off the listening sounds while you talk. |

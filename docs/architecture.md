@@ -507,6 +507,11 @@ card and waits for the answer, and `notch::approve` is a card with **Decline**
 and **Approve** actions. The `open` tool and custom tools call it before they
 run a command. Cards wait in a queue, and the panel shows the oldest one.
 
+The panel registers its keyboard shortcuts as Carbon hot keys, which work in
+any app and don't need the Accessibility permission. When the mute state
+changes, the panel tells the `notch` crate, and the capture thread replaces the
+microphone audio with silence while the microphone is muted.
+
 The panel's window has a fixed size and ignores the mouse. Thirty times a
 second, the panel checks whether the pointer is over the visible shape, and
 accepts clicks only while it is. On the same timer, it reads the loudest level
