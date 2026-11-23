@@ -177,8 +177,9 @@ first rule that matches applies:
    transcript ends with punctuation and the score is 0.9 or more, commit after
    220 ms.
 1. With an unfinished verdict, commit 1,500 ms after your voice stopped. The
-   wait is 600 ms for three words or fewer, or for a phrase such as "what's it
-   called"; 3 seconds when the transcript ends on a connector word; and 500 ms
+   wait is 600 ms for three words or fewer, for a phrase such as "what's it
+   called", or when the second-pass transcript ends with sentence punctuation;
+   3 seconds when the transcript ends on a connector word; and 500 ms
    longer after a listening sound.
 1. Without a verdict, commit 80 ms after the end of utterance, or 800 ms after
    the last partial transcript.
@@ -352,6 +353,13 @@ up to your last message.
 At start, milo warms the cache with the system prompt through Rapid-MLX's
 `/v1/cache/prefill` endpoint. If the server doesn't have that endpoint, milo
 sends a one-token chat request instead.
+
+Rapid-MLX sizes its prompt cache from the memory that is free after the model
+loads, which can be too small to hold one conversation with a large model. When
+the cache is too small, every request reads the whole history again. milo sets
+the cache to one eighth of the Mac's memory through the
+`RAPID_MLX_PREFIX_CACHE_MAX_BYTES` environment variable. If you set that
+variable yourself, milo keeps your value.
 
 ## Tools
 

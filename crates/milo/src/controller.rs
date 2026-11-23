@@ -533,7 +533,10 @@ impl Controller {
                 (now >= (v.speech_end + settle).max(last + TRAIL)).then(|| label(v, "turn"))
             }
             Some(v) if finished == Some(false) => {
-                let short = self.heard.as_ref().is_some_and(|h| h.words.len() <= SHORT_WORDS || trailing(&h.text));
+                let short = self
+                    .heard
+                    .as_ref()
+                    .is_some_and(|h| h.words.len() <= SHORT_WORDS || trailing(&h.text) || h.refined && closed(&h.text));
                 let wait = if dangle {
                     DANGLE_PATIENCE
                 } else if short {
@@ -1039,6 +1042,11 @@ fn trailing(text: &str) -> bool {
     let t = text.trim().to_lowercase();
     let t = t.trim_end_matches(|c: char| !c.is_alphanumeric());
     SEARCHING.iter().any(|p| t.ends_with(p))
+}
+
+fn closed(text: &str) -> bool {
+    let t = text.trim_end();
+    t.ends_with(['.', '!', '?']) && !t.ends_with("...")
 }
 
 fn dangling(text: &str) -> bool {
