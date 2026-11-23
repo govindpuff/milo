@@ -11,6 +11,7 @@ use llm::{Call, Llm, Message};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use crate::computer;
 use crate::controller::Event;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -67,6 +68,7 @@ enum Kind {
     Open,
     Remember,
     Forget,
+    Computer,
     Command(Vec<String>),
 }
 
@@ -97,10 +99,12 @@ pub struct Tools {
     list: Vec<Tool>,
     http: reqwest::Client,
     events: UnboundedSender<Event>,
+    llm: Llm,
+    talking: Arc<AtomicBool>,
 }
 
 impl Tools {
-    pub fn load(events: UnboundedSender<Event>) -> Tools {
+    pub fn load(events: UnboundedSender<Event>, llm: Llm, talking: Arc<AtomicBool>) -> Tools {
         let mut list = vec![
             tool(
                 "weather",
@@ -162,6 +166,26 @@ impl Tools {
                 Kind::Forget,
             ),
         ];
+        if notch::on() {
+            list.push(tool(
+                "computer",
+                "Do something on the person's computer by using its apps for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing a song, or reading something off the screen.",
+                "use the apps on their computer for them, by clicking and typing",
+                json!({
+                    "task": {
+                        "type": "string",
+                        "description": "A short name for what they asked, like Send Priya a message or Play some jazz.",
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The plan, as two to six short steps in order, like Open Messages. Each step names the app and the exact words to type, taken from what they said.",
+                    },
+                }),
+                &["task", "steps"],
+                Kind::Computer,
+            ));
+        }
         match custom() {
             Ok(more) => {
                 for t in more {
@@ -180,7 +204,7 @@ impl Tools {
             .user_agent("milo/0.1")
             .build()
             .expect("reqwest client");
-        Tools { list, http, events }
+        Tools { list, http, events, llm, talking }
     }
 
     pub fn abilities(&self) -> String {
@@ -210,7 +234,11 @@ impl Tools {
     }
 
     fn gated(&self, name: &str) -> bool {
-        notch::on() && self.list.iter().any(|t| t.name == name && matches!(t.kind, Kind::Open | Kind::Command(_)))
+        notch::on()
+            && self
+                .list
+                .iter()
+                .any(|t| t.name == name && matches!(t.kind, Kind::Open | Kind::Computer | Kind::Command(_)))
     }
 
     async fn attempt(&self, call: &Call) -> Result<String> {
@@ -221,6 +249,7 @@ impl Tools {
             Kind::Open => open(&call.args).await,
             Kind::Remember => remember(&call.args),
             Kind::Forget => forget(&call.args),
+            Kind::Computer => self.computer(&call.args).await,
             Kind::Command(argv) => command(t, argv, &call.args).await,
         }
     }
@@ -315,6 +344,36 @@ impl Tools {
         Ok(out)
     }
 
+    async fn computer(&self, args: &Map<String, Value>) -> Result<String> {
+        let task = text(args, "task").ok_or_else(|| anyhow!("they did not say what to do"))?;
+        let mut steps: Vec<String> = match args.get("steps") {
+            Some(Value::Array(list)) => list.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+            Some(Value::String(lines)) => lines.lines().map(str::to_string).collect(),
+            _ => Vec::new(),
+        };
+        steps.retain_mut(|s| {
+            *s = s
+                .trim()
+                .trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '.' | ')' | '-'))
+                .trim()
+                .to_string();
+            !s.is_empty()
+        });
+        if steps.is_empty() {
+            steps.push(task.clone());
+        }
+        if computer::running() {
+            bail!(computer::BUSY);
+        }
+        let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
+        allow(&task, &plan.join("\n")).await?;
+        let _claim = computer::claim()?;
+        match computer::run(&self.llm, &self.talking, &self.events, &task, &steps).await? {
+            Some(said) => Ok(said),
+            None => Err(Skipped.into()),
+        }
+    }
+
     fn timer(&self, args: &Map<String, Value>) -> Result<String> {
         let secs = number(args, "minutes").unwrap_or(0.0) * 60.0 + number(args, "seconds").unwrap_or(0.0);
         if !(1.0..=MAX_TIMER).contains(&secs) {
@@ -334,8 +393,11 @@ impl Tools {
     }
 }
 
-async fn open(args: &Map<String, Value>) -> Result<String> {
-    let what = text(args, "what").ok_or_else(|| anyhow!("nothing to open"))?;
+fn opener(what: &str) -> Result<tokio::process::Command> {
+    let what = what.trim().to_string();
+    if what.is_empty() {
+        bail!("nothing to open");
+    }
     let lower = what.to_lowercase();
     let site =
         lower.starts_with("http://") || lower.starts_with("https://") || (what.contains('.') && !what.contains(' '));
@@ -351,12 +413,23 @@ async fn open(args: &Map<String, Value>) -> Result<String> {
         }
         cmd.args(["-a", &what]);
     }
-    allow(&format!("Open {what}?"), &shown(cmd.as_std())).await?;
+    Ok(cmd)
+}
+
+pub async fn launch(what: &str) -> Result<String> {
+    let mut cmd = opener(what)?;
+    let what = what.trim();
     let out = tokio::time::timeout(RUN_TIMEOUT, cmd.output()).await.map_err(|_| anyhow!("it took too long"))??;
     if !out.status.success() {
         bail!("could not find anything called {what} to open");
     }
     Ok(format!("opened {what}"))
+}
+
+async fn open(args: &Map<String, Value>) -> Result<String> {
+    let what = text(args, "what").ok_or_else(|| anyhow!("nothing to open"))?;
+    allow(&format!("Open {what}?"), &shown(opener(&what)?.as_std())).await?;
+    launch(&what).await
 }
 
 fn shown(cmd: &std::process::Command) -> String {
@@ -566,7 +639,7 @@ fn encode(s: &str) -> String {
     out
 }
 
-fn clip(s: &str) -> String {
+pub fn clip(s: &str) -> String {
     let s = s.trim();
     if s.chars().count() <= RESULT_CHARS {
         return s.to_string();

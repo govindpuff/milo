@@ -1,4 +1,5 @@
 mod capture;
+mod computer;
 mod controller;
 mod react;
 mod reply;
@@ -77,7 +78,7 @@ const WITH_TOOLS: &str = "Your helper:
 - When they ask for something on the list, say you're on it in a few words, like Sure, one sec. or Ooh, let me check. and stop there. Never make up the outcome or say it's done. If a detail is missing, like which city, ask for it instead.
 - When they ask for something that is not on the list, or for anything else live like news, scores or prices, say right away that you can't do that. Never say you're on it.
 - A message starting with (result) is the helper telling you how it went, not them speaking. Tell them what it says in a sentence or two, in your own words, and nothing more. If it failed, say so and why in a few words. If they say something didn't happen, believe them.
-- Anything that acts on their computer first asks them on their screen, and nothing happens until they approve it there. When the square brackets at the start of their message say something is waiting for them to approve, it has not happened. If they ask about it or say it didn't work, tell them it's waiting for them to approve it on their screen. Otherwise don't bring it up.
+- Anything that acts on their computer first asks them on their screen, and nothing happens until they approve it there. When the square brackets at the start of their message say something is waiting for them to approve, it has not happened. If they ask about it or say it didn't work, tell them it's waiting for them to approve it on their screen. Otherwise don't bring it up. When the brackets say you are still working on their computer, that is not finished either, and you will be told when it is.
 - When they tell you something about themselves, just respond like a friend. The helper remembers it without you saying so.
 
 Them: what's the weather like in boston
@@ -157,7 +158,7 @@ struct Args {
 async fn status(talking: Arc<AtomicBool>, busy: Arc<AtomicBool>) {
     let mut last = "";
     loop {
-        let state = if busy.load(Relaxed) {
+        let state = if busy.load(Relaxed) || computer::running() {
             "working"
         } else if talking.load(Relaxed) {
             "talking"
@@ -302,7 +303,7 @@ fn run(args: Args) -> Result<()> {
     let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
     let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
     let talking = Arc::new(AtomicBool::new(false));
-    let tools = (!args.no_tools).then(|| Arc::new(tools::Tools::load(events_tx.clone())));
+    let tools = (!args.no_tools).then(|| Arc::new(tools::Tools::load(events_tx.clone(), llm.clone(), talking.clone())));
     let section = match &tools {
         Some(tools) => WITH_TOOLS.replace("{abilities}", &tools.abilities()),
         None => NO_TOOLS.to_string(),

@@ -284,7 +284,7 @@ impl Llm {
 
 const REPLY_TOKENS: u32 = 1200;
 const TEMPERATURE: f32 = 0.7;
-const ACT_TOKENS: u32 = 200;
+const ACT_TOKENS: u32 = 320;
 const ACT_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn parse_call(name: &serde_json::Value, args: &serde_json::Value) -> Option<Call> {

@@ -43,6 +43,7 @@ const MAX_NUDGES: u32 = 2;
 const SILENCE: &str = "(silence)";
 const RESULT: &str = "(result)";
 const WAITING: &str = "not done yet, waiting for them to approve on their screen:";
+const WORKING: &str = "still working on their computer, not finished yet";
 const LOOK_LINES: usize = 7;
 const PROMISE_WORDS: usize = 16;
 const PROMISES: &[&str] = &[
@@ -759,10 +760,13 @@ impl Controller {
         };
         self.settings.talking.store(true, Relaxed);
         let waiting = notch::waiting();
-        let stamp = match waiting.is_empty() {
-            true => local_time(),
-            false => format!("{}; {WAITING} {}", local_time(), waiting.join(" ")),
-        };
+        let mut stamp = local_time();
+        if !waiting.is_empty() {
+            stamp.push_str(&format!("; {WAITING} {}", waiting.join(" ")));
+        }
+        if crate::computer::running() {
+            stamp.push_str(&format!("; {WORKING}"));
+        }
         let prompt = format!("[{stamp}] {text}{}", if brief { " ..." } else { "" });
         let said = self.last_react.and_then(|(at, key)| key.filter(|_| at.elapsed() < REACT_MEMORY));
         let mut messages = self.history.clone();
