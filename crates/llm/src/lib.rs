@@ -282,7 +282,7 @@ impl Llm {
     }
 }
 
-const REPLY_TOKENS: u32 = 90;
+const REPLY_TOKENS: u32 = 1200;
 const TEMPERATURE: f32 = 0.7;
 const ACT_TOKENS: u32 = 200;
 const ACT_TIMEOUT: Duration = Duration::from_secs(20);

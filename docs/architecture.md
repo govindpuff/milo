@@ -212,12 +212,13 @@ When it commits a turn, the controller does the following:
 - **Chunking.** `llm::chunker` removes Markdown and emoji and splits the text.
   The first chunk ends at the first clause boundary after three words, at the
   end of a sentence, or after 12 words, and goes to the voice at once. The rest
-  of the reply goes to the voice as one request when the model finishes, so
-  that Breeze delivers it in one piece. The chunker doesn't split numbers such
+  of a short reply goes to the voice as one request when the model finishes, so
+  that Breeze delivers it in one piece. A long reply, such as a story, goes to
+  the voice in pieces of about 40 words while the model is still writing. The chunker doesn't split numbers such
   as 3.5 or abbreviations such as "Dr."
-- **Length.** Generation stops after two full sentences of three or more words
-  each. The limit is four sentences for tool results, and when you ask how,
-  why, or for an explanation or a story.
+- **Length.** The model decides how long a reply is. The system prompt asks
+  for short replies in small talk and for a complete answer when you ask for
+  something longer. The only limit in code is 1,200 tokens for each reply.
 - **Questions.** If any of milo's last three replies ended with a question, a
   final question is dropped from this one.
 - **Sounds.** Only the sounds that the voice engine supports, such as `(laugh)`

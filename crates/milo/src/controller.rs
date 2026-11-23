@@ -93,36 +93,6 @@ const DANGLERS: &[&str] = &[
     "while", "which", "gonna", "wanna", "kinda", "from", "into", "than", "as", "by",
 ];
 const LEADIN_WAIT: Duration = Duration::from_millis(1600);
-const SENTENCES: usize = 2;
-const SENTENCES_ASKED: usize = 4;
-const ASKED: &[&str] = &[
-    "how do",
-    "how to",
-    "how does",
-    "how did",
-    "how would",
-    "how can",
-    "explain",
-    "tell ",
-    "joke",
-    "riddle",
-    "poem",
-    "give me",
-    "list",
-    "suggest",
-    "recommend",
-    "ideas",
-    "walk me",
-    "describe",
-    "story",
-    "recipe",
-    "what happened",
-    "why",
-    "what's the difference",
-    "go on",
-    "keep going",
-    "more about",
-];
 const SEARCHING: &[&str] = &[
     "what's it called",
     "what is it called",
@@ -773,10 +743,6 @@ impl Controller {
             Some(c) if text != SILENCE => format!("{c} {text}"),
             _ => text,
         };
-        let cap = {
-            let t = text.to_lowercase();
-            if t.starts_with(RESULT) || ASKED.iter().any(|a| t.contains(a)) { SENTENCES_ASKED } else { SENTENCES }
-        };
         self.settings.talking.store(true, Relaxed);
         let prompt = format!("[{}] {text}{}", local_time(), if brief { " ..." } else { "" });
         let said = self.last_react.and_then(|(at, key)| key.filter(|_| at.elapsed() < REACT_MEMORY));
@@ -795,7 +761,6 @@ impl Controller {
             said,
             self.last_opener,
             brief,
-            cap,
         ));
         let now = Instant::now();
         self.turn = Some(Turn {

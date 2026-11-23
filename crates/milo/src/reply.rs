@@ -14,6 +14,7 @@ use crate::tts::Job;
 
 pub const FULL_WORDS: usize = 5;
 const MOOD_CHARS: usize = 80;
+const PIECE_WORDS: usize = 40;
 const DULL: &[&str] = &[
     "flat",
     "resigned",
@@ -55,10 +56,7 @@ pub async fn generate(
     said: Option<usize>,
     skip: Option<usize>,
     brief: bool,
-    cap: usize,
 ) {
-    let mut body = String::new();
-    let mut capped = false;
     let mut mood: Option<String> = None;
     let mut lead: Option<String> = Some(String::new());
     let mut chunker = Chunker::new();
@@ -140,18 +138,17 @@ pub async fn generate(
                             None => text,
                         };
                         for chunk in chunker.push(&text) {
-                            body.push_str(&chunk);
-                            body.push(' ');
                             if !first {
                                 first = true;
                                 say(chunk, &mood, after.take(), &mut spoken);
-                            } else {
-                                rest.push(chunk);
+                                continue;
                             }
-                        }
-                        if sentences(&body).iter().filter(|s| whole(s)).count() >= cap {
-                            capped = true;
-                            break;
+                            let held: usize = rest.iter().map(|r| words(r)).sum();
+                            if !brief && held > 0 && held + words(&chunk) > PIECE_WORDS {
+                                say(rest.join(" "), &mood, after.take(), &mut spoken);
+                                rest.clear();
+                            }
+                            rest.push(chunk);
                         }
                     }
                     Err(e) => {
@@ -174,16 +171,12 @@ pub async fn generate(
             Err(held) => held,
         };
     }
-    if !capped {
-        if !tail.is_empty() {
-            rest.extend(chunker.push(&tail));
-        }
-        rest.extend(chunker.finish());
+    if !tail.is_empty() {
+        rest.extend(chunker.push(&tail));
     }
+    rest.extend(chunker.finish());
     if !rest.is_empty() {
-        let joined = rest.join(" ");
-        let kept = limit(spoken.last().map_or("", String::as_str), &joined, cap).to_string();
-        rest = if kept.is_empty() { Vec::new() } else { vec![kept] };
+        rest = vec![rest.join(" ")];
     }
     if trim_question && let Some(last) = rest.pop() {
         let kept = drop_final_question(&last);
@@ -235,33 +228,8 @@ pub fn sentences(text: &str) -> Vec<&str> {
     out
 }
 
-fn ended(text: &str) -> bool {
-    text.trim_end().ends_with(['.', '!', '?'])
-}
-
 pub fn words(sentence: &str) -> usize {
     sentence.split_whitespace().filter(|w| !w.starts_with('(') && w.chars().any(char::is_alphanumeric)).count()
-}
-
-fn whole(sentence: &str) -> bool {
-    ended(sentence) && words(sentence) >= FULL_WORDS
-}
-
-fn limit<'a>(said: &str, rest: &'a str, cap: usize) -> &'a str {
-    let mut n = sentences(said).iter().filter(|s| whole(s)).count();
-    let mut open = !said.trim().is_empty() && !ended(said);
-    let mut end = 0;
-    for s in sentences(rest) {
-        if n >= cap {
-            break;
-        }
-        if whole(s) || (open && ended(s)) {
-            n += 1;
-        }
-        open = false;
-        end = s.as_ptr() as usize - rest.as_ptr() as usize + s.len();
-    }
-    rest[..end].trim()
 }
 
 fn drop_final_question(text: &str) -> &str {
