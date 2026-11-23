@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 import os
 
@@ -19,6 +20,32 @@ enum Size {
     static let open: CGFloat = 380
     static let drop: CGFloat = 190
     static let level = 3
+    static let signature: OSType = 0x4D49_4C4F
+}
+
+enum Key: UInt32, CaseIterable {
+    case approve = 1
+    case decline = 2
+    case mute = 3
+    case talk = 4
+
+    var code: Int {
+        switch self {
+        case .approve: kVK_ANSI_Y
+        case .decline: kVK_ANSI_N
+        case .mute: kVK_ANSI_M
+        case .talk: kVK_Space
+        }
+    }
+
+    var hint: String {
+        switch self {
+        case .approve: "⌃⌥Y"
+        case .decline: "⌃⌥N"
+        case .mute: "⌃⌥M"
+        case .talk: "⌃⌥Space"
+        }
+    }
 }
 
 struct Choice: Decodable, Identifiable {
@@ -34,9 +61,15 @@ struct Card: Decodable, Identifiable {
     let actions: [Choice]
 }
 
+extension Card {
+    var yes: Choice? { actions.first { $0.primary == true } }
+    var no: Choice? { actions.first { $0.primary != true } }
+}
+
 struct Message: Decodable {
     let type: String
     let state: String?
+    let on: Bool?
     let id: UInt64?
     let card: Card?
 }
@@ -153,6 +186,12 @@ struct CardView: View {
     let waiting: Int
     let choose: (UInt64, String) -> Void
 
+    func hint(_ action: Choice) -> String? {
+        if action.id == card.yes?.id { return Key.approve.hint }
+        if action.id == card.no?.id { return Key.decline.hint }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(card.title)
@@ -171,8 +210,17 @@ struct CardView: View {
                 }
                 Spacer()
                 ForEach(card.actions) { action in
-                    Button(action.label) { choose(card.id, action.id) }
-                        .buttonStyle(Pill(primary: action.primary ?? false))
+                    Button {
+                        choose(card.id, action.id)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(action.label)
+                            if let hint = hint(action) {
+                                Text(hint).opacity(0.45)
+                            }
+                        }
+                    }
+                    .buttonStyle(Pill(primary: action.primary ?? false))
                 }
             }
             .padding(.top, 6)
@@ -193,21 +241,26 @@ struct NotchView: View {
                     if let card = model.cards.first {
                         CardView(card: card, waiting: model.cards.count - 1, choose: model.choose)
                     } else {
-                        HStack {
-                            Text("Milo").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
-                            Spacer()
-                            Text(model.muted ? "Muted" : model.state.capitalized)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.6))
-                            Button(action: model.toggle) {
-                                Image(systemName: model.muted ? "mic.slash.fill" : "mic.fill")
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Milo").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                                Spacer()
+                                Text(model.muted ? "Muted" : model.state.capitalized)
                                     .font(.system(size: 12))
-                                    .foregroundStyle(model.muted ? Color.red : Color.white)
-                                    .frame(width: 28, height: 28)
-                                    .background(Color.white.opacity(0.14), in: Circle())
+                                    .foregroundStyle(.white.opacity(0.6))
+                                Button(action: model.toggle) {
+                                    Image(systemName: model.muted ? "mic.slash.fill" : "mic.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(model.muted ? Color.red : Color.white)
+                                        .frame(width: 28, height: 28)
+                                        .background(Color.white.opacity(0.14), in: Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(model.muted ? "Unmute the microphone" : "Mute the microphone")
                             }
-                            .buttonStyle(.plain)
-                            .help(model.muted ? "Unmute the microphone" : "Mute the microphone")
+                            Text("\(Key.mute.hint) mute · hold \(Key.talk.hint) to talk")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.white.opacity(0.4))
                         }
                     }
                 }
@@ -279,6 +332,7 @@ final class Controller {
             MainActor.assumeIsolated { self?.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
+        keys()
     }
 
     func place() {
@@ -320,8 +374,68 @@ final class Controller {
     }
 
     func toggle() {
-        model.muted.toggle()
-        send(Mute(on: model.muted))
+        mute(!model.muted)
+    }
+
+    func mute(_ on: Bool) {
+        guard model.muted != on else { return }
+        model.muted = on
+        send(Mute(on: on))
+    }
+
+    func key(_ key: Key, _ down: Bool) {
+        switch key {
+        case .approve:
+            if down, let card = model.cards.first, let action = card.yes { choose(card.id, action.id) }
+        case .decline:
+            if down, let card = model.cards.first, let action = card.no { choose(card.id, action.id) }
+        case .mute:
+            if down { toggle() }
+        case .talk:
+            mute(!down)
+        }
+    }
+
+    func keys() {
+        let target = GetApplicationEventTarget()
+        let kinds = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+        InstallEventHandler(
+            target,
+            { _, event, _ in
+                var id = EventHotKeyID()
+                let status = GetEventParameter(
+                    event,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &id
+                )
+                guard status == noErr, let key = Key(rawValue: id.id) else { return OSStatus(eventNotHandledErr) }
+                let down = GetEventKind(event) == UInt32(kEventHotKeyPressed)
+                MainActor.assumeIsolated { controller?.key(key, down) }
+                return noErr
+            },
+            kinds.count,
+            kinds,
+            nil,
+            nil
+        )
+        for key in Key.allCases {
+            var ref: EventHotKeyRef?
+            RegisterEventHotKey(
+                UInt32(key.code),
+                UInt32(controlKey | optionKey),
+                EventHotKeyID(signature: Size.signature, id: key.rawValue),
+                target,
+                0,
+                &ref
+            )
+        }
     }
 
     func send(_ value: some Encodable) {
@@ -336,6 +450,8 @@ final class Controller {
             if let state = message.state { model.state = state }
         case "card":
             if let card = message.card { model.cards.append(card) }
+        case "mute":
+            mute(message.on ?? false)
         case "dismiss":
             if let id = message.id { model.cards.removeAll { $0.id == id } }
         default:

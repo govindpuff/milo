@@ -89,6 +89,10 @@ pub fn muted() -> bool {
     MUTED.load(Relaxed)
 }
 
+pub fn mute(on: bool) {
+    post(json!({ "type": "mute", "on": on }));
+}
+
 pub fn status(state: &str) {
     post(json!({ "type": "status", "state": state }));
 }
