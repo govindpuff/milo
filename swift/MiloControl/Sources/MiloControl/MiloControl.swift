@@ -478,7 +478,10 @@ func look(_ request: [String: Any], _ grid: Bool) throws -> [String: Any] {
         }
     }
     var out: [String: Any] = ["text": head, "print": print(image)]
-    if let data = render(image, area, grid) { out["image"] = data.base64EncodedString() }
+    if let data = render(image, area, grid) {
+        out["image"] = data.base64EncodedString()
+        if let save = request["save"] as? String { try? data.write(to: URL(fileURLWithPath: save)) }
+    }
     return out
 }
 
@@ -514,18 +517,18 @@ func borrow(_ pid: pid_t, _ work: () -> Void) {
         work()
         return
     }
-    var theirs: CGWindowID = 0
-    if let app = NSWorkspace.shared.frontmostApplication {
-        let other = AXUIElementCreateApplication(app.processIdentifier)
-        if let focused = element(other, kAXFocusedWindowAttribute) { theirs = number(focused) }
-    }
-    tell(ahead, theirs, 0x02)
     tell(mine, pane_id, 0x01)
     usleep(30_000)
     work()
     usleep(60_000)
     tell(mine, pane_id, 0x02)
-    tell(ahead, theirs, 0x01)
+}
+
+func forward(_ pid: pid_t) {
+    let app = AXUIElementCreateApplication(pid)
+    if AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue) != .success {
+        NSRunningApplication(processIdentifier: pid)?.activate()
+    }
 }
 
 func send(_ event: CGEvent, _ pid: pid_t) {
@@ -555,8 +558,8 @@ func poke(_ point: CGPoint, _ pid: pid_t) {
 func tap(_ point: CGPoint, _ pid: pid_t) {
     let before = NSWorkspace.shared.frontmostApplication
     let cursor = CGEvent(source: nil)?.location
-    if let running = NSRunningApplication(processIdentifier: pid), !running.isActive {
-        running.activate()
+    if before?.processIdentifier != pid {
+        forward(pid)
         usleep(Limit.settle)
     }
     let source = CGEventSource(stateID: .hidSystemState)
@@ -568,7 +571,7 @@ func tap(_ point: CGPoint, _ pid: pid_t) {
     }
     usleep(120_000)
     if let cursor { CGWarpMouseCursorPosition(cursor) }
-    if let before, before.processIdentifier != pid { before.activate() }
+    if let before, before.processIdentifier != pid { forward(before.processIdentifier) }
 }
 
 func strike(_ point: CGPoint, _ pid: pid_t, _ mode: String) {
