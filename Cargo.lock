@@ -2013,6 +2013,7 @@ dependencies = [
  "jiff 0.2.46",
  "llm",
  "log",
+ "notch",
  "phonon",
  "reqwest",
  "serde_json",
@@ -2168,6 +2169,14 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "notch"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
