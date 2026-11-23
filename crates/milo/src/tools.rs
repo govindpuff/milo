@@ -170,7 +170,7 @@ impl Tools {
         if notch::on() {
             list.push(tool(
                 "computer",
-                "Do something on the person's computer by using its apps for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing a song, or reading something off the screen. It opens the apps and websites it needs, so do not call open as well.",
+                "Do something on the person's computer by using its apps for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing a song, or reading something off the screen. It opens the apps and websites it needs, so do not call open as well. If they have not said something the task needs, like what a message should say or who it is for, do not call this: Milo will ask them.",
                 "use the apps on their computer for them, by clicking and typing",
                 json!({
                     "task": {
@@ -180,7 +180,7 @@ impl Tools {
                     "steps": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "The plan, as two to six short steps in order, like Open Messages. Each step names the app and the exact words to type, taken from what they said.",
+                        "description": "The plan, as two to six short steps in order, like Open Messages. Each step names the app and the exact words to type, taken from what they said. Never make up words to type.",
                     },
                 }),
                 &["task", "steps"],
@@ -467,7 +467,7 @@ fn memory_path() -> Result<PathBuf> {
     Ok(dir.join("memory.md"))
 }
 
-fn memory() -> Vec<String> {
+pub fn memory() -> Vec<String> {
     let Ok(raw) = memory_path().and_then(|p| Ok(std::fs::read_to_string(p)?)) else { return Vec::new() };
     let all: Vec<String> =
         raw.lines().map(|l| l.trim().trim_start_matches('-').trim().to_string()).filter(|l| !l.is_empty()).collect();

@@ -1,5 +1,5 @@
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -41,12 +41,15 @@ Rules:
 - When the thing you need is in the picture but has no number, call grid. It shows the picture divided into squares named A1 to F4. Call grid again with a square to get closer, then call click with the square that the thing is in the middle of.
 - look shows the screen again. Use it when something is still loading.
 - If an action fails or the screen did not change the way you expected, try another way.
+- Before you type or send anything meant for a person, check that the picture and the list show that person's conversation is the one open, by its name. A name that is merely listed in a sidebar is not open. If the wrong conversation is open or you cannot tell, do not type: open the right one first, or stop and say you could not find it.
+- When the plan says me, myself or my own, it means the person you work for. Their name is under Known about the person when it is known.
 - Before you finish, check that the latest picture shows the plan is done. Typing in a search box or seeing a result listed is not the same as having opened it. If the picture does not show it, keep going or say it did not work.
 - If you cannot finish after trying, stop and say what got in the way.
 - When the plan is done, do not call a tool. Write one or two short plain sentences that Milo will say out loud: what was done, or what you found if they asked for information. Take every fact from the screen.";
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static HALT: Notify = Notify::const_new();
+static SHOT: AtomicUsize = AtomicUsize::new(0);
 
 struct Running;
 
@@ -169,8 +172,22 @@ async fn act(request: Value) -> Result<String, String> {
     control(request).await.map(|answer| answer["text"].as_str().unwrap_or_default().to_string())
 }
 
+fn saved() -> std::path::PathBuf {
+    std::env::temp_dir().join("milo-computer")
+}
+
+fn next() -> String {
+    let at = SHOT.fetch_add(1, Relaxed);
+    saved().join(format!("{at:02}.jpg")).to_string_lossy().into_owned()
+}
+
+fn keep(seen: &Seen, did: &str) {
+    let at = SHOT.load(Relaxed).saturating_sub(1);
+    let _ = std::fs::write(saved().join(format!("{at:02}.txt")), format!("{did}\n\n{}\n", seen.text));
+}
+
 async fn screen() -> Seen {
-    match control(json!({ "op": "look" })).await {
+    match control(json!({ "op": "look", "save": next() })).await {
         Ok(answer) => Seen::from(&answer),
         Err(text) => Seen { text: format!("the screen could not be read: {text}"), image: None, print: Vec::new() },
     }
@@ -216,7 +233,7 @@ async fn step(call: &Call, before: &Seen) -> (String, Seen) {
     let name = call.name.as_str();
     let (did, after) = match name {
         "look" => (Ok("looked again".to_string()), screen().await),
-        "grid" => match control(json!({ "op": "grid", "cell": text("cell") })).await {
+        "grid" => match control(json!({ "op": "grid", "cell": text("cell"), "save": next() })).await {
             Ok(answer) => (Ok("showing the grid".to_string()), Seen::from(&answer)),
             Err(e) => (Err(e), screen().await),
         },
@@ -248,6 +265,7 @@ async fn step(call: &Call, before: &Seen) -> (String, Seen) {
     if !matches!(name, "look" | "grid") && after.same(before) {
         did = format!("{did}. {SAME}");
     }
+    keep(&after, &format!("{name} {} -> {did}", Value::Object(call.args.clone())));
     (did, after)
 }
 
@@ -268,11 +286,19 @@ async fn drive(
     id: u64,
 ) -> Result<String> {
     act(json!({ "op": "start" })).await.map_err(|e| anyhow!("{e}"))?;
-    let first = control(json!({ "op": "look" })).await.map_err(|e| anyhow!("{e}"))?;
+    let _ = std::fs::remove_dir_all(saved());
+    let _ = std::fs::create_dir_all(saved());
+    SHOT.store(0, Relaxed);
+    let first = control(json!({ "op": "look", "save": next() })).await.map_err(|e| anyhow!("{e}"))?;
     let mut before = Seen::from(&first);
     let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
     let schema = schema();
-    let lead = format!("What they asked for: {task}\n\nThe plan they approved:\n{}", plan.join("\n"));
+    let mut lead = format!("What they asked for: {task}\n\nThe plan they approved:\n{}", plan.join("\n"));
+    let known = tools::memory();
+    if !known.is_empty() {
+        lead.push_str(&format!("\n\nKnown about the person:\n- {}", known.join("\n- ")));
+    }
+    keep(&before, &lead);
     let mut messages = vec![Message::system(PROMPT), Seen::from(&first).message(&lead)];
     let mut typed: Vec<String> = Vec::new();
     for _ in 0..MAX_STEPS {
