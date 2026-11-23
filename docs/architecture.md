@@ -46,12 +46,14 @@ The workspace has the following crates:
 
 | Crate | What it does |
 |---|---|
-| `crates/milo` | The `milo` binary. `main.rs` has the command-line options, the system prompt, start-up, and shutdown. `controller.rs` runs the conversation. `reply.rs` streams a reply from the model and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` records and picks reaction clips. `capture.rs` runs the capture thread. `tools.rs` has the tool agent, the tools, and memory. |
+| `crates/milo` | The `milo` binary. `main.rs` has the command-line options, the system prompt, start-up, and shutdown. `controller.rs` runs the conversation. `reply.rs` streams a reply from the model and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` records and picks reaction clips. `capture.rs` runs the capture thread. `tools.rs` has the tool agent, the tools, and memory. `computer.rs` carries out an approved plan in your apps. |
 | `crates/audio` | Microphone and speaker I/O through cpal, lock-free ring buffers, resampling, echo reference alignment, and playback with flush and onset timing. |
 | `crates/speech` | Rust bindings to `swift/MiloSpeech`, a Swift static library that wraps FluidAudio: LocalVQE echo removal, Parakeet EOU streaming recognition, and Parakeet TDT 0.6B v2 for the second pass. Its build script runs `swift build` and links the result. |
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn v3.2) through ONNX Runtime, and the second-pass thread. It downloads both models on first use. |
 | `crates/llm` | The client for the OpenAI-compatible model server, the sentence chunker, and the Rapid-MLX launcher. |
 | `crates/voice` | Starts the Python voice server for Breeze, and streams audio from it. The server script, `sidecar/voice_server.py`, is embedded in the binary. |
+| `crates/notch` | Rust bindings to `swift/MiloNotch`, the panel in the notch. |
+| `crates/control` | Rust bindings to `swift/MiloControl`, a Swift static library that reads the front window through the macOS Accessibility API, and clicks, types, presses keys, and chooses menu items. |
 | `crates/phonon` | The Phonon voice, which runs in-process through the `ptts` crate. milo uses it with `--tts phonon` and when the voice server can't start. |
 
 The `setup.sh` script installs the tools, creates the voice server's Python
@@ -491,6 +493,41 @@ FluidAudio downloads the Parakeet and LocalVQE models on first use, and Core ML
 compiles them. Starting the recognizer blocks until the models are loaded and
 warmed up.
 
+### Computer use
+
+The `computer` tool takes a short task name and a list of steps. The tool agent
+writes both from what you said. The panel shows the steps as one card, and one
+approval covers the whole plan. The tool exists only when the panel is on.
+
+After you approve, `computer.rs` runs a second agent, the *operator*, with its
+own prompt and the tools `click`, `type`, `press`, `menu`, `open`, and `look`.
+The loop works as follows:
+
+1. `swift/MiloControl` walks the Accessibility tree of the front window and
+   returns it as lines of text. Each control that can be used gets a number, and
+   static text is listed without one. The walk skips anything outside the
+   window's frame, reads only the visible rows of tables and lists, and stops
+   at 200 controls or 2.5 seconds.
+2. The operator calls one tool. A click performs the control's press action, a
+   click on a row selects it, and a click on a text field focuses it. If the
+   Accessibility action fails, milo brings the app to the front and posts a
+   mouse click at the middle of the control. Typed text goes to the app's
+   process as key events. Key combinations go through the system event stream,
+   so system shortcuts work.
+3. milo waits for the app to settle, reads the window again, and returns the
+   result and the new screen. Only the newest screen stays in the operator's
+   messages, so the prompt doesn't grow with every step.
+
+The loop ends when the operator replies without a tool call. That reply comes
+back the same way as any other tool result. The loop also ends after 30 steps
+or four minutes, or when you click **Stop** on the card that shows the last
+action. A stopped plan reports nothing.
+
+For Chromium and Electron apps, milo sets the `AXEnhancedUserInterface` and
+`AXManualAccessibility` attributes on the app, which makes them build their
+Accessibility tree. macOS grants the Accessibility permission to the terminal
+app that starts milo.
+
 ### Notch panel
 
 The panel is a SwiftUI view in a borderless, non-activating `NSPanel` above the
@@ -510,6 +547,10 @@ waits for approval, runs the command, and reports the result, and then goes on
 to the next request. A declined or unanswered card reports nothing. The panel
 shows the newest card first, and a second card for the same command is dropped
 while the first one waits.
+
+While a card waits or a plan runs, the time stamp at the start of each of your
+messages to the talker says so, and the talker knows that the action hasn't
+happened yet.
 
 The panel registers its keyboard shortcuts as Carbon hot keys, which work in
 any app and don't need the Accessibility permission. When the mute state

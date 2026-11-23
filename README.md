@@ -4,7 +4,7 @@ milo is a voice assistant that runs entirely on your Mac. You talk, and it talks
 back, like a phone call. It starts preparing an answer before you finish
 speaking, you can talk over it to interrupt, and it makes small listening
 sounds, such as "mm-hmm," while you talk. It can also check the weather, set
-timers, open apps, and remember what you tell it.
+timers, open apps, use apps for you, and remember what you tell it.
 
 ## Requirements
 
@@ -48,6 +48,7 @@ To quit, press Control+C.
 - "What's the weather in Chicago?"
 - "Set a timer for two minutes."
 - "Open Safari."
+- "Make a new note that says call the dentist."
 - "Remember that my sister's name is Priya."
 - Talk over milo to interrupt it.
 - Pause in the middle of a sentence. milo waits for you to go on.
@@ -84,7 +85,29 @@ microphone starts muted, and milo hears you only while you hold
 Control+Option+Space.
 
 To turn off the panel, start milo with `milo --no-notch`. milo then runs
-commands without asking.
+commands without asking, and can't use apps for you.
+
+## Let milo use your apps
+
+milo can click, type, press keys, and choose menu items in the apps on your
+Mac. For example, you can ask it to write a note, send a message, or search a
+website.
+
+1.  In System Settings, go to **Privacy & Security** > **Accessibility**, and
+    turn on access for your terminal app. Then start milo again.
+2.  Ask milo for something that takes a few steps in an app.
+3.  The panel shows the plan as a list of steps. To let milo carry out the
+    whole plan, click **Approve**, or press Control+Option+Y. milo doesn't ask
+    again for each step.
+4.  While milo works, the panel shows the last thing that it did. To stop it,
+    click **Stop**, or press Control+Option+N.
+
+When milo finishes, it tells you what it did. milo works on one plan at a time,
+and stops a plan that takes longer than four minutes.
+
+milo reads the names of the buttons, fields, and text in the front window. It
+doesn't look at the pixels, so it can't use apps that draw their own
+controls, such as games.
 
 ## Memory
 
@@ -194,6 +217,9 @@ doesn't support tool calls, add `--no-tools`.
   the reason. Run `./setup.sh` again.
 - **The build fails with a Rust version error.** Run `rustup update`, and then
   run `./setup.sh` again.
+- **milo says that Accessibility is turned off.** In System Settings, go to
+  **Privacy & Security** > **Accessibility**, turn on access for your terminal
+  app, and start milo again.
 - **Something else is wrong.** Run `RUST_LOG=debug milo` for more detail. The
   model server and the voice write their own logs to
   `$TMPDIR/milo-rapid-mlx-8000.log` and `$TMPDIR/milo-voice-8881.log`.
