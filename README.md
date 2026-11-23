@@ -55,8 +55,9 @@ To quit, press Control+C.
 ## Approve actions
 
 milo shows a small panel in the notch at the top of your screen. On a Mac
-without a notch, the panel sits at the top center of the screen. A dot in the
-panel shows whether milo is listening, talking, or working.
+without a notch, the panel sits at the top center of the screen. The bars on
+the left move with your voice, and the bars on the right move with milo's. To
+see what milo is doing, hold the pointer over the panel.
 
 Before milo opens an app or a website, or runs one of your own tools, the panel
 shows the exact command. To let it run, click **Approve**. To stop it, click

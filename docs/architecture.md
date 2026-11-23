@@ -507,6 +507,13 @@ card and waits for the answer, and `notch::approve` is a card with **Decline**
 and **Approve** actions. The `open` tool and custom tools call it before they
 run a command. Cards wait in a queue, and the panel shows the oldest one.
 
+The panel's window has a fixed size and ignores the mouse. Thirty times a
+second, the panel checks whether the pointer is over the visible shape, and
+accepts clicks only while it is. On the same timer, it reads the loudest level
+since the last check for each side and moves the bars. The capture thread
+reports the level of the audio that milo is playing, and the level of your
+voice after echo removal, or of the microphone when echo removal is off.
+
 ### Shutdown
 
 When you press Control+C, the controller stops the current turn. milo then
