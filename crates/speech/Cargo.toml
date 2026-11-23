@@ -1,0 +1,12 @@
+[package]
+name = "speech"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+links = "MiloSpeech"
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
