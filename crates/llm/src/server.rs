@@ -19,6 +19,8 @@ const SERVE_FLAGS: &[&str] =
 const CACHE_ENV: &str = "RAPID_MLX_PREFIX_CACHE_MAX_BYTES";
 const CACHE_GB_ENV: &str = "APC_MEMORY_MAX_GB";
 const CACHE_SHARE: u64 = 5;
+const RESERVE_ENV: &str = "APC_MEMORY_RESERVE_GB";
+const RESERVE_GB: &str = "1";
 const MEMORY_FALLBACK: u64 = 16 << 30;
 const GIB: f64 = (1u64 << 30) as f64;
 
@@ -84,6 +86,7 @@ pub fn ensure_running(model: &str, port: u16) -> Result<Option<ServerGuard>> {
         .args(["--watchdog-ppid", &ppid])
         .env("RAPID_MLX_TELEMETRY", "0")
         .env(CACHE_ENV, std::env::var(CACHE_ENV).unwrap_or_else(|_| budget.to_string()))
+        .env(RESERVE_ENV, std::env::var(RESERVE_ENV).unwrap_or_else(|_| RESERVE_GB.to_string()))
         .env(CACHE_GB_ENV, std::env::var(CACHE_GB_ENV).unwrap_or_else(|_| format!("{:.2}", budget as f64 / GIB)))
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
