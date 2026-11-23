@@ -110,7 +110,7 @@ milo has the following built-in tools:
 
 | Tool | What it does |
 |---|---|
-| `weather` | Gets the current weather and the forecast for today and tomorrow from Open-Meteo, in Fahrenheit and miles per hour. If you don't name a city, it uses the one that you set with `--home`. |
+| `weather` | Gets the current weather and the forecast for today and tomorrow from Open-Meteo, in Fahrenheit and miles per hour. |
 | `lookup` | Gets the opening of the top English Wikipedia result for a topic. |
 | `timer` | Starts a timer of 1 second to 24 hours. milo tells you when it finishes. |
 | `open` | Opens an app by name, or a website. |
@@ -283,7 +283,6 @@ options and their defaults, run `milo --help`.
 | `--tts` | Sets the voice engine: `breeze`, `lure`, or `phonon`. The default is `breeze`. |
 | `--voice-design` | Describes the Breeze voice to create. |
 | `--voice-ref`, `--voice-text` | Sets a WAV recording to copy the voice from, and its exact transcript. |
-| `--home` | Sets the city for the weather when you don't name one. |
 | `--no-tools` | Turns off tools and memory. |
 | `--no-backchannel` | Turns off the listening sounds while you talk or pause. |
 | `--nudge-ms` | Sets how long milo waits in silence after a reply before it follows up, in milliseconds. The default is `6000`. To turn off follow-ups, set it to `0`. |

@@ -252,8 +252,6 @@ struct Args {
         help = "Don't let the voice do things (weather, lookups, timers, opening apps, notes, your own commands)"
     )]
     no_tools: bool,
-    #[arg(long, value_name = "CITY", help = "City to use for the weather when none is named")]
-    home: Option<String>,
     #[arg(long, value_name = "FILE", help = "Use the system prompt in FILE instead of the built-in one")]
     system_prompt: Option<PathBuf>,
     #[arg(long, default_value_t = 90, help = "Most tokens a single reply may use")]
@@ -390,7 +388,7 @@ fn main() -> Result<()> {
     let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
     let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
     let talking = Arc::new(AtomicBool::new(false));
-    let tools = (!args.no_tools).then(|| Arc::new(tools::Tools::load(events_tx.clone(), args.home.clone())));
+    let tools = (!args.no_tools).then(|| Arc::new(tools::Tools::load(events_tx.clone())));
     let section = match &tools {
         Some(tools) => WITH_TOOLS.replace("{abilities}", &tools.abilities()),
         None => NO_TOOLS.to_string(),

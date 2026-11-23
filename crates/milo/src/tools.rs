@@ -86,11 +86,10 @@ pub struct Tools {
     list: Vec<Tool>,
     http: reqwest::Client,
     events: UnboundedSender<Event>,
-    home: Option<String>,
 }
 
 impl Tools {
-    pub fn load(events: UnboundedSender<Event>, home: Option<String>) -> Tools {
+    pub fn load(events: UnboundedSender<Event>) -> Tools {
         let mut list = vec![
             tool(
                 "weather",
@@ -165,7 +164,7 @@ impl Tools {
             .user_agent("milo/0.1")
             .build()
             .expect("reqwest client");
-        Tools { list, http, events, home }
+        Tools { list, http, events }
     }
 
     pub fn abilities(&self) -> String {
@@ -229,8 +228,8 @@ impl Tools {
     }
 
     async fn weather(&self, args: &Map<String, Value>) -> Result<String> {
-        let Some(place) = text(args, "place").or_else(|| self.home.clone()) else {
-            bail!("they did not say which city, and no home city is set; ask them which city");
+        let Some(place) = text(args, "place") else {
+            bail!("they did not say which city; ask them which city");
         };
         let city = place.split(',').next().unwrap_or(&place).trim();
         let city = match city.to_lowercase().replace('.', "").as_str() {
