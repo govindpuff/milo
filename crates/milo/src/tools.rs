@@ -15,6 +15,7 @@ use crate::controller::Event;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
+const APPROVE_TIMEOUT: Duration = Duration::from_secs(45);
 const RESULT_CHARS: usize = 700;
 const DONE_KEPT: usize = 4;
 const DONE_CHARS: usize = 90;
@@ -318,11 +319,29 @@ async fn open(args: &Map<String, Value>) -> Result<String> {
         }
         cmd.args(["-a", &what]);
     }
+    allow(&format!("Open {what}?"), &shown(cmd.as_std())).await?;
     let out = tokio::time::timeout(RUN_TIMEOUT, cmd.output()).await.map_err(|_| anyhow!("it took too long"))??;
     if !out.status.success() {
         bail!("could not find anything called {what} to open");
     }
     Ok(format!("opened {what}"))
+}
+
+fn shown(cmd: &std::process::Command) -> String {
+    let mut parts = vec![cmd.get_program().to_string_lossy().into_owned()];
+    parts.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
+    parts.join(" ")
+}
+
+async fn allow(title: &str, detail: &str) -> Result<()> {
+    if !notch::on() {
+        return Ok(());
+    }
+    match notch::approve(title, detail, APPROVE_TIMEOUT).await {
+        Some(true) => Ok(()),
+        Some(false) => bail!("they declined it on their screen"),
+        None => bail!("they did not approve it on their screen in time"),
+    }
 }
 
 fn memory_path() -> Result<PathBuf> {
@@ -395,6 +414,7 @@ async fn command(t: &Tool, argv: &[String], args: &Map<String, Value>) -> Result
     let (bin, rest) = filled.split_first().ok_or_else(|| anyhow!("it has no command"))?;
     let mut cmd = tokio::process::Command::new(bin);
     cmd.args(rest).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    allow(&format!("Run {}?", t.name), &shown(cmd.as_std())).await?;
     let out = tokio::time::timeout(RUN_TIMEOUT, cmd.output()).await.map_err(|_| anyhow!("it took too long"))?;
     let out = out.with_context(|| format!("could not run {bin}"))?;
     if !out.status.success() {

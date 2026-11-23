@@ -15,6 +15,7 @@ futures-util = "0.3"
 jiff = "0.2"
 llm = { path = "../llm" }
 log = "0.4"
+notch = { path = "../notch" }
 phonon = { path = "../phonon" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 serde_json = "1"

@@ -8,6 +8,7 @@ mod tts;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use std::thread::{self, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
@@ -91,6 +92,7 @@ You: [easy] Ah, I can't do that one.
 
 {memory}";
 
+const STATUS_POLL: Duration = Duration::from_millis(100);
 const WARMUP_TEXT: &str = "Hello there, I'm ready when you are.";
 
 #[derive(Parser)]
@@ -137,6 +139,8 @@ struct Args {
     no_aec: bool,
     #[arg(long, help = "Don't let the voice do things (weather, timers, opening apps, notes, your own commands)")]
     no_tools: bool,
+    #[arg(long, help = "Don't show the panel in the notch; actions then run without asking")]
+    no_notch: bool,
     #[arg(long, value_name = "FILE", help = "Use the system prompt in FILE instead of the built-in one")]
     system_prompt: Option<PathBuf>,
     #[arg(long, value_name = "NAME", help = "Microphone to use, by name or part of it [default: the system input]")]
@@ -145,6 +149,24 @@ struct Args {
     output_device: Option<String>,
     #[arg(long, help = "List the audio devices and exit")]
     list_devices: bool,
+}
+
+async fn status(talking: Arc<AtomicBool>, busy: Arc<AtomicBool>) {
+    let mut last = "";
+    loop {
+        let state = if busy.load(Relaxed) {
+            "working"
+        } else if talking.load(Relaxed) {
+            "talking"
+        } else {
+            "listening"
+        };
+        if state != last {
+            notch::status(state);
+            last = state;
+        }
+        tokio::time::sleep(STATUS_POLL).await;
+    }
 }
 
 fn joined<T>(handle: ScopedJoinHandle<'_, Result<T>>, what: &str) -> Result<T> {
@@ -160,6 +182,23 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if args.no_notch {
+        return run(args);
+    }
+    notch::run(move || {
+        let code = match run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("Error: {e:?}");
+                1
+            }
+        };
+        std::process::exit(code);
+    });
+    Ok(())
+}
+
+fn run(args: Args) -> Result<()> {
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let system = match &args.system_prompt {
         Some(path) => {
@@ -280,6 +319,10 @@ fn main() -> Result<()> {
         tools::spawn(llm.clone(), tools, talking.clone(), busy.clone(), events_tx.clone())
     });
 
+    if notch::on() {
+        let _rt = rt.enter();
+        tokio::spawn(status(talking.clone(), busy.clone()));
+    }
     println!("listening");
     let controller = Controller::new(
         llm,
