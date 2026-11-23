@@ -18,7 +18,7 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const RESULT_CHARS: usize = 700;
 const DONE_KEPT: usize = 4;
 const DONE_CHARS: usize = 90;
-const NOTHING: &str = "nothing was done: the helper did not find anything it could do in what they said. Say it didn't go through, and ask for whatever detail seems to be missing";
+const NOTHING: &str = "nothing was done: the helper has no way to do what they asked. All it can do is: {abilities}. If what they asked is not one of those, tell them plainly that you can't do that. If it is one of those and a detail is missing, ask for the detail";
 const MAX_CALLS: usize = 2;
 const MAX_STEPS: usize = 4;
 const MEMORY_LINES: usize = 60;
@@ -559,6 +559,7 @@ async fn work(
     if let Err(e) = llm.warm_tools(&system, &schema).await {
         log::debug!("tool prompt warm-up failed: {e:#}");
     }
+    let nothing = NOTHING.replace("{abilities}", &tools.abilities());
     while let Some(mut look) = rx.recv().await {
         while let Ok(newer) = rx.try_recv() {
             look = newer;
@@ -603,7 +604,7 @@ async fn work(
                 let said = reply.text.trim();
                 let said = said.strip_prefix("thought").unwrap_or(said).trim().trim_matches('"').trim();
                 report = match step {
-                    0 => look.promised.then(|| NOTHING.to_string()),
+                    0 => look.promised.then(|| nothing.clone()),
                     _ if hushed && !look.promised => None,
                     _ if said.split_whitespace().count() < 3 || said.eq_ignore_ascii_case("none") => last.clone(),
                     _ => Some(clip(said)),
