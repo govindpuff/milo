@@ -12,6 +12,7 @@ use crate::controller::Event;
 use crate::react::{Bank, Probe};
 use crate::tts::Job;
 
+const FULL_WORDS: usize = 5;
 const MOOD_CHARS: usize = 80;
 const DULL: &[&str] = &[
     "flat",
@@ -241,7 +242,7 @@ fn ended(text: &str) -> bool {
 fn whole(sentence: &str) -> bool {
     ended(sentence)
         && sentence.split_whitespace().filter(|w| !w.starts_with('(') && w.chars().any(char::is_alphanumeric)).count()
-            >= 3
+            >= FULL_WORDS
 }
 
 fn limit<'a>(said: &str, rest: &'a str, cap: usize) -> &'a str {
