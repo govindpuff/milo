@@ -170,7 +170,7 @@ impl Tools {
         if notch::on() {
             list.push(tool(
                 "computer",
-                "Do something on the person's computer by using its apps for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing a song, or reading something off the screen.",
+                "Do something on the person's computer by using its apps for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing a song, or reading something off the screen. It opens the apps and websites it needs, so do not call open as well.",
                 "use the apps on their computer for them, by clicking and typing",
                 json!({
                     "task": {
@@ -403,7 +403,7 @@ impl Tools {
     }
 }
 
-fn opener(what: &str) -> Result<tokio::process::Command> {
+fn opener(what: &str, behind: bool) -> Result<tokio::process::Command> {
     let what = what.trim().to_string();
     if what.is_empty() {
         bail!("nothing to open");
@@ -412,6 +412,9 @@ fn opener(what: &str) -> Result<tokio::process::Command> {
     let site =
         lower.starts_with("http://") || lower.starts_with("https://") || (what.contains('.') && !what.contains(' '));
     let mut cmd = tokio::process::Command::new("/usr/bin/open");
+    if behind {
+        cmd.arg("-g");
+    }
     if site {
         if lower.contains("://") && !lower.starts_with("http://") && !lower.starts_with("https://") {
             bail!("only web addresses and apps can be opened");
@@ -426,8 +429,8 @@ fn opener(what: &str) -> Result<tokio::process::Command> {
     Ok(cmd)
 }
 
-pub async fn launch(what: &str) -> Result<String> {
-    let mut cmd = opener(what)?;
+pub async fn launch(what: &str, behind: bool) -> Result<String> {
+    let mut cmd = opener(what, behind)?;
     let what = what.trim();
     let out = tokio::time::timeout(RUN_TIMEOUT, cmd.output()).await.map_err(|_| anyhow!("it took too long"))??;
     if !out.status.success() {
@@ -438,8 +441,8 @@ pub async fn launch(what: &str) -> Result<String> {
 
 async fn open(args: &Map<String, Value>) -> Result<String> {
     let what = text(args, "what").ok_or_else(|| anyhow!("nothing to open"))?;
-    allow(&format!("Open {what}?"), &shown(opener(&what)?.as_std())).await?;
-    launch(&what).await
+    allow(&format!("Open {what}?"), &shown(opener(&what, false)?.as_std())).await?;
+    launch(&what, false).await
 }
 
 fn shown(cmd: &std::process::Command) -> String {
