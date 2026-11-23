@@ -44,7 +44,7 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
     println!("cargo:rustc-link-search=native=/usr/lib/swift");
     println!("cargo:rustc-link-lib=static:+whole-archive=MiloControl");
-    for fw in ["AppKit", "ApplicationServices", "Carbon", "Foundation"] {
+    for fw in ["AppKit", "ApplicationServices", "Carbon", "CoreText", "Foundation", "ImageIO", "ScreenCaptureKit"] {
         println!("cargo:rustc-link-lib=framework={fw}");
     }
 }
