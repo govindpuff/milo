@@ -18,6 +18,7 @@ unsafe extern "C" {
 }
 
 static ON: AtomicBool = AtomicBool::new(false);
+static MUTED: AtomicBool = AtomicBool::new(false);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static WAITING: LazyLock<Mutex<HashMap<u64, oneshot::Sender<String>>>> = LazyLock::new(Mutex::default);
 
@@ -39,6 +40,10 @@ extern "C" fn reply(message: *const c_char) {
     }
     let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
     let Ok(value) = serde_json::from_str::<Value>(&text) else { return };
+    if value["type"] == "mute" {
+        MUTED.store(value["on"].as_bool().unwrap_or(false), Relaxed);
+        return;
+    }
     let (Some(id), Some(action)) = (value["id"].as_u64(), value["action"].as_str()) else { return };
     if let Some(tx) = WAITING.lock().unwrap().remove(&id) {
         let _ = tx.send(action.to_string());
@@ -78,6 +83,10 @@ pub fn heard(samples: &[f32]) {
 
 pub fn spoke(samples: &[f32]) {
     level(1, samples);
+}
+
+pub fn muted() -> bool {
+    MUTED.load(Relaxed)
 }
 
 pub fn status(state: &str) {

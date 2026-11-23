@@ -46,12 +46,19 @@ struct Answer: Encodable {
     let action: String
 }
 
+struct Mute: Encodable {
+    let type = "mute"
+    let on: Bool
+}
+
 @MainActor
 final class Model: ObservableObject {
     @Published var state = "starting"
     @Published var notch = CGSize(width: Size.plain, height: Size.menu)
     @Published var cards: [Card] = []
     @Published var hovering = false
+    @Published var muted = false
+    var toggle: () -> Void = {}
     var shape = CGSize.zero
     var choose: (UInt64, String) -> Void = { _, _ in }
     var expanded: Bool { !cards.isEmpty || hovering }
@@ -105,12 +112,20 @@ struct Bars: View {
 struct Ears: View {
     @ObservedObject var wave: Wave
     let state: String
+    let muted: Bool
     let notch: CGSize
 
     var body: some View {
         let height = max(notch.height - 16, Size.bar)
         HStack(spacing: 0) {
-            Bars(levels: wave.me, color: .white, height: height).frame(width: Size.ear)
+            Group {
+                if muted {
+                    Image(systemName: "mic.slash.fill").font(.system(size: 12)).foregroundStyle(.red)
+                } else {
+                    Bars(levels: wave.me, color: .white, height: height)
+                }
+            }
+            .frame(width: Size.ear)
             Spacer(minLength: 0)
             Bars(levels: wave.milo.reversed(), color: state == "working" ? .orange : .cyan, height: height)
                 .frame(width: Size.ear)
@@ -172,7 +187,7 @@ struct NotchView: View {
     var body: some View {
         let open = model.expanded
         VStack(spacing: 0) {
-            Ears(wave: wave, state: model.state, notch: model.notch)
+            Ears(wave: wave, state: model.state, muted: model.muted, notch: model.notch)
             if open {
                 Group {
                     if let card = model.cards.first {
@@ -181,7 +196,18 @@ struct NotchView: View {
                         HStack {
                             Text("Milo").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                             Spacer()
-                            Text(model.state.capitalized).font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                            Text(model.muted ? "Muted" : model.state.capitalized)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.6))
+                            Button(action: model.toggle) {
+                                Image(systemName: model.muted ? "mic.slash.fill" : "mic.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(model.muted ? Color.red : Color.white)
+                                    .frame(width: 28, height: 28)
+                                    .background(Color.white.opacity(0.14), in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(model.muted ? "Unmute the microphone" : "Mute the microphone")
                         }
                     }
                 }
@@ -239,6 +265,7 @@ final class Controller {
         host.sizingOptions = []
         panel.contentView = host
         model.choose = { [weak self] id, action in self?.choose(id, action) }
+        model.toggle = { [weak self] in self?.toggle() }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -289,7 +316,16 @@ final class Controller {
 
     func choose(_ id: UInt64, _ action: String) {
         model.cards.removeAll { $0.id == id }
-        guard let data = try? JSONEncoder().encode(Answer(id: id, action: action)) else { return }
+        send(Answer(id: id, action: action))
+    }
+
+    func toggle() {
+        model.muted.toggle()
+        send(Mute(on: model.muted))
+    }
+
+    func send(_ value: some Encodable) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
         String(decoding: data, as: UTF8.self).withCString { reply?($0) }
     }
 

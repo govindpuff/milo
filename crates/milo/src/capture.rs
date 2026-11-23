@@ -77,6 +77,9 @@ pub fn spawn(
             match capture.read(&mut mic, &mut reference) {
                 Ok(true) => {
                     let at = Instant::now();
+                    if notch::muted() {
+                        mic.fill(0.0);
+                    }
                     speech.push(&mic, &reference);
                     notch::spoke(&reference);
                     if direct.is_some() {

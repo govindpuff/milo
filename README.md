@@ -59,6 +59,9 @@ without a notch, the panel sits at the top center of the screen. The bars on
 the left move with your voice, and the bars on the right move with milo's. To
 see what milo is doing, hold the pointer over the panel.
 
+To mute your microphone, hold the pointer over the panel and click the
+microphone button. To unmute, click the button again.
+
 Before milo opens an app or a website, or runs one of your own tools, the panel
 shows the exact command. To let it run, click **Approve**. To stop it, click
 **Decline**. If you don't answer within 45 seconds, milo doesn't run the
