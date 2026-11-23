@@ -105,6 +105,34 @@ pub fn status(state: &str) {
     post(json!({ "type": "status", "state": state }));
 }
 
+fn card(id: u64, card: &Card) -> Value {
+    let actions: Vec<Value> =
+        card.actions.iter().map(|a| json!({ "id": a.id, "label": a.label, "primary": a.primary })).collect();
+    json!({
+        "type": "card",
+        "card": { "id": id, "title": card.title, "body": card.body, "actions": actions },
+    })
+}
+
+pub fn show(shown: &Card) -> (u64, oneshot::Receiver<String>) {
+    let id = NEXT.fetch_add(1, Relaxed);
+    let (tx, rx) = oneshot::channel();
+    WAITING.lock().unwrap().insert(id, tx);
+    post(card(id, shown));
+    (id, rx)
+}
+
+pub fn revise(id: u64, shown: &Card) {
+    if WAITING.lock().unwrap().contains_key(&id) {
+        post(card(id, shown));
+    }
+}
+
+pub fn dismiss(id: u64) {
+    WAITING.lock().unwrap().remove(&id);
+    post(json!({ "type": "dismiss", "id": id }));
+}
+
 pub async fn ask(card: Card, wait: Duration) -> Option<String> {
     if !on() {
         return None;
@@ -113,22 +141,13 @@ pub async fn ask(card: Card, wait: Duration) -> Option<String> {
     if !SHOWN.lock().unwrap().insert(key.clone()) {
         return None;
     }
-    let id = NEXT.fetch_add(1, Relaxed);
-    let (tx, rx) = oneshot::channel();
-    WAITING.lock().unwrap().insert(id, tx);
-    let actions: Vec<Value> =
-        card.actions.iter().map(|a| json!({ "id": a.id, "label": a.label, "primary": a.primary })).collect();
-    post(json!({
-        "type": "card",
-        "card": { "id": id, "title": card.title, "body": card.body, "actions": actions },
-    }));
+    let (id, rx) = show(&card);
     let answer = tokio::time::timeout(wait, rx).await;
     SHOWN.lock().unwrap().remove(&key);
     match answer {
         Ok(Ok(action)) => Some(action),
         _ => {
-            WAITING.lock().unwrap().remove(&id);
-            post(json!({ "type": "dismiss", "id": id }));
+            dismiss(id);
             None
         }
     }

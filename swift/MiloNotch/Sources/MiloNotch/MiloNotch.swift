@@ -18,7 +18,7 @@ enum Size {
     static let plain: CGFloat = 180
     static let menu: CGFloat = 24
     static let open: CGFloat = 380
-    static let drop: CGFloat = 190
+    static let drop: CGFloat = 240
     static let level = 3
     static let signature: OSType = 0x4D49_4C4F
 }
@@ -202,7 +202,7 @@ struct CardView: View {
                 Text(body)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(3)
+                    .lineLimit(6)
             }
             HStack(spacing: 8) {
                 if waiting > 0 {
@@ -449,7 +449,12 @@ final class Controller {
         case "status":
             if let state = message.state { model.state = state }
         case "card":
-            if let card = message.card { model.cards.insert(card, at: 0) }
+            guard let card = message.card else { return }
+            if let at = model.cards.firstIndex(where: { $0.id == card.id }) {
+                model.cards[at] = card
+            } else {
+                model.cards.insert(card, at: 0)
+            }
         case "mute":
             mute(message.on ?? false)
         case "dismiss":
