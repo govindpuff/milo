@@ -61,6 +61,7 @@ pub fn spawn(
                 let mut heard = 0u64;
                 for audio in cleaned {
                     heard += audio.len() as u64;
+                    notch::heard(&audio);
                     detector.push(&audio, clock.at(heard).unwrap_or_else(Instant::now));
                 }
             })?;
@@ -77,6 +78,10 @@ pub fn spawn(
                 Ok(true) => {
                     let at = Instant::now();
                     speech.push(&mic, &reference);
+                    notch::spoke(&reference);
+                    if direct.is_some() {
+                        notch::heard(&mic);
+                    }
                     pushed += mic.len() as u64;
                     clock.record(pushed, at);
                     if let Some(detector) = &mut direct {
