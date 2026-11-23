@@ -1,0 +1,12 @@
+[package]
+name = "phonon"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+ptts = { version = "0.7.1", features = ["accelerate", "hf", "hub", "kai"] }
+xn = "0.2.14"
