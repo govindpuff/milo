@@ -435,8 +435,8 @@ fn custom() -> Result<Vec<Tool>> {
     let mut out = Vec::new();
     for entry in parsed.as_array().ok_or_else(|| anyhow!("{} must be a list", path.display()))? {
         let field = |k: &str| entry[k].as_str().map(str::trim).filter(|s| !s.is_empty());
-        let (Some(name), Some(about)) = (field("name"), field("about")) else {
-            bail!("every tool needs a name and an about");
+        let (Some(name), Some(about)) = (field("name"), field("description")) else {
+            bail!("every tool needs a name and a description");
         };
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             bail!("tool name {name:?} may only use letters, digits and underscores");
@@ -460,10 +460,8 @@ fn custom() -> Result<Vec<Tool>> {
                     .collect()
             })
             .unwrap_or_default();
-        let can = field("can").map(String::from).unwrap_or_else(|| {
-            let mut c = about.trim_end_matches('.').chars();
-            c.next().map(|f| f.to_lowercase().chain(c).collect()).unwrap_or_default()
-        });
+        let mut can = about.trim_end_matches('.').chars();
+        let can = can.next().map(|f| f.to_lowercase().chain(can).collect()).unwrap_or_default();
         out.push(Tool { name: name.into(), about: about.into(), can, params, kind: Kind::Command(argv) });
     }
     Ok(out)

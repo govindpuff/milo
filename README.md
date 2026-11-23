@@ -67,7 +67,7 @@ To let milo run your own commands, list them in `~/.config/milo/tools.json`:
 [
   {
     "name": "lights",
-    "about": "Turn the lights on or off.",
+    "description": "Turn the lights on or off.",
     "params": { "state": "on or off" },
     "run": ["shortcuts", "run", "Lights {state}"]
   }
@@ -75,7 +75,7 @@ To let milo run your own commands, list them in `~/.config/milo/tools.json`:
 ```
 
 - `name`: the tool name, in letters, digits, and underscores.
-- `about`: what the tool does. milo reads this text to decide when to use the
+- `description`: what the tool does. milo reads this text to decide when to use the
   tool.
 - `params`: optional. The values that milo fills in, as names mapped to
   descriptions.
