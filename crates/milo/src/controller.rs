@@ -115,6 +115,7 @@ pub enum Event {
     TtsEnd { turn: u64 },
     Doing(String),
     Aside(String),
+    Trimmed { cut: usize, system: String },
     Fatal(String),
 }
 
@@ -198,6 +199,7 @@ pub struct Controller {
     events: UnboundedSender<Event>,
     settings: Settings,
     history: Vec<Message>,
+    trimming: bool,
     turn: Option<Turn>,
     heard: Option<Heard>,
     voice_reset: turn::Reset,
@@ -244,6 +246,7 @@ impl Controller {
             events,
             settings,
             history,
+            trimming: false,
             turn: None,
             heard: None,
             voice_reset,
@@ -655,6 +658,13 @@ impl Controller {
                 self.dim_line(&format!("({what})"));
             }
             Event::Aside(text) => self.asides.push_back(text),
+            Event::Trimmed { cut, system } => {
+                self.trimming = false;
+                if 1 + cut < self.history.len() {
+                    self.history.drain(1..1 + cut);
+                    self.history[0].content = system;
+                }
+            }
             Event::Fatal(_) => {}
         }
     }
@@ -934,7 +944,7 @@ impl Controller {
         }
         self.gaps = gaps;
         if !t.full.trim().is_empty() && remember(&mut self.history, Message::assistant(t.full)) {
-            self.warm();
+            self.trim();
         }
     }
 
@@ -955,20 +965,35 @@ impl Controller {
             let heard = format!("{heard}…");
             self.dim_line(&format!("(interrupted) heard: {heard}"));
             if remember(&mut self.history, Message::assistant(heard)) {
-                self.warm();
+                self.trim();
             }
         }
     }
 
-    fn warm(&mut self) {
-        if let (Some(system), Some(first)) = (&self.settings.system, self.history.first_mut()) {
-            first.content = system.replace("{memory}", &crate::tools::memory_section());
+    fn trim(&mut self) {
+        if self.trimming {
+            return;
         }
-        let (llm, history) = (self.llm.clone(), self.history.clone());
+        let mut cut = self.history.len() - 1 - HISTORY_KEEP;
+        while 1 + cut < self.history.len() && self.history[1 + cut].role != Role::User {
+            cut += 1;
+        }
+        if 1 + cut >= self.history.len() {
+            return;
+        }
+        let system = match &self.settings.system {
+            Some(system) => system.replace("{memory}", &crate::tools::memory_section()),
+            None => self.history[0].content.clone(),
+        };
+        let mut next = vec![Message::system(system.clone())];
+        next.extend_from_slice(&self.history[1 + cut..]);
+        self.trimming = true;
+        let (llm, events) = (self.llm.clone(), self.events.clone());
         tokio::spawn(async move {
-            if let Err(e) = llm.warm(&history).await {
+            if let Err(e) = llm.warm(&next).await {
                 log::debug!("cache warm failed: {e:#}");
             }
+            let _ = events.send(Event::Trimmed { cut, system });
         });
     }
 
@@ -1118,15 +1143,7 @@ fn spoken_line(m: &Message) -> Option<String> {
 fn remember(history: &mut Vec<Message>, message: Message) -> bool {
     let reply = message.role == Role::Assistant;
     history.push(message);
-    if !reply || history.len() - 1 <= HISTORY_MAX {
-        return false;
-    }
-    let mut cut = history.len() - 1 - HISTORY_KEEP;
-    while 1 + cut < history.len() && history[1 + cut].role != Role::User {
-        cut += 1;
-    }
-    history.drain(1..1 + cut);
-    true
+    reply && history.len() - 1 > HISTORY_MAX
 }
 
 fn close_line(t: &mut Turn) {

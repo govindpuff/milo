@@ -345,10 +345,12 @@ while the tool agent works.
 
 The history starts with the system prompt and only grows, so that each request
 starts with the previous one and the server can reuse its prompt cache. When the
-history passes 40 messages after a reply, the controller keeps about the last
-20, starting at one of your messages. After this cut, it rebuilds the system
-prompt with the current memory, and warms the server's cache with the history
-up to your last message.
+history passes 40 messages after a reply, the controller prepares a shorter
+history: the system prompt, rebuilt with the current memory, and about the last
+20 messages, starting at one of your messages. The server has to read a
+shortened history from the start, which takes a few seconds, so the controller
+warms the server's cache with it in the background and keeps using the full
+history until that finishes.
 
 At start, milo warms the cache with the system prompt through Rapid-MLX's
 `/v1/cache/prefill` endpoint. If the server doesn't have that endpoint, milo
@@ -361,6 +363,8 @@ the cache to one fifth of the Mac's memory through two environment variables,
 `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` and `APC_MEMORY_MAX_GB`, because the server
 applies both limits. If you set either variable yourself, milo keeps your
 value. The server still removes cache entries when the Mac runs low on memory.
+milo also sets `APC_MEMORY_RESERVE_GB` to 1, so that the server keeps 1 GB
+free instead of a tenth of the GPU memory before it removes entries.
 
 ## Tools
 
