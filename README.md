@@ -227,6 +227,9 @@ doesn't support tool calls, add `--no-tools`.
 - **milo says that Accessibility or Screen Recording is turned off.** In System
   Settings, go to **Privacy & Security**, turn on access for your terminal app
   under **Accessibility** and **Screen Recording**, and start milo again.
+- **milo does the wrong thing in an app.** The folder `$TMPDIR/milo-computer`
+  has the picture and the list that milo saw at each step of the last plan,
+  and the action that led to it.
 - **Something else is wrong.** Run `RUST_LOG=debug milo` for more detail. The
   model server and the voice write their own logs to
   `$TMPDIR/milo-rapid-mlx-8000.log` and `$TMPDIR/milo-voice-8881.log`.
