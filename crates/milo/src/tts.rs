@@ -15,21 +15,21 @@ use crate::controller::Event;
 const TAIL_MS: u32 = 10;
 
 pub enum Engine {
-    Phonon(Tts, phonon::Voice),
+    Phonon(Tts),
     Sidecar(voice::Voice),
 }
 
 impl Engine {
     pub fn sounds(&self) -> &'static [&'static str] {
         match self {
-            Engine::Phonon(..) => &[],
-            Engine::Sidecar(sidecar) => sidecar.kind().sounds(),
+            Engine::Phonon(_) => &[],
+            Engine::Sidecar(_) => voice::SOUNDS,
         }
     }
 
     pub fn sample_rate(&self) -> u32 {
         match self {
-            Engine::Phonon(tts, _) => tts.sample_rate(),
+            Engine::Phonon(tts) => tts.sample_rate(),
             Engine::Sidecar(sidecar) => sidecar.sample_rate(),
         }
     }
@@ -44,7 +44,7 @@ impl Engine {
         on_pcm: &mut (dyn FnMut(&[f32]) -> Result<()> + Send),
     ) -> Result<()> {
         match self {
-            Engine::Phonon(tts, voice) => tts.synthesize(voice, &strip_tags(text), stop, on_pcm),
+            Engine::Phonon(tts) => tts.synthesize(&strip_tags(text), stop, on_pcm),
             Engine::Sidecar(sidecar) => sidecar.synthesize(text, instruct, session, lead, stop, on_pcm),
         }
     }

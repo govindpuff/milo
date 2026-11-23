@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use llm::{Llm, LlmConfig, Message};
-use phonon::{Quant, Tts, TtsConfig};
-use speech::{Speech, SpeechConfig};
-use voice::{Kind, Voice, VoiceConfig};
+use llm::{Llm, Message};
+use phonon::Tts;
+use speech::Speech;
+use voice::{Voice, VoiceConfig};
 
 use crate::capture::AudioClock;
 use crate::controller::{Controller, Event, Settings};
@@ -156,9 +156,9 @@ struct Args {
     #[arg(
         long,
         default_value = "breeze",
-        value_parser = ["breeze", "lure", "phonon"],
+        value_parser = ["breeze", "phonon"],
         hide_possible_values = true,
-        help = "Voice engine: breeze (most natural), lure (lighter) or phonon (small and fast)"
+        help = "Voice engine: breeze (most natural) or phonon (small and fast)"
     )]
     tts: String,
     #[arg(
@@ -171,80 +171,12 @@ struct Args {
     nudge_ms: u64,
     #[arg(long, help = "Don't react (mm-hmm, oh no, a laugh) while the user is talking or pausing mid-thought")]
     no_backchannel: bool,
-    #[arg(
-        long,
-        help = "With --no-aec, don't stop talking as soon as the user's voice is heard; wait for recognized words"
-    )]
-    no_yield: bool,
-    #[arg(long, help = "Breeze: synthesize each piece of a reply on its own instead of as one continuous delivery")]
-    no_flow: bool,
-    #[arg(long, help = "Don't use pre-recorded reaction clips at all")]
-    no_reactions: bool,
-    #[arg(long, help = "Don't treat a short wordless sound (hmm, huh) as something the user said")]
-    no_wordless: bool,
-    #[arg(long, value_name = "WAV", help = "Breeze or Lure: a 3 to 12 second clip of the voice to use")]
+    #[arg(long, value_name = "WAV", help = "Breeze: a 3 to 12 second clip of the voice to use")]
     voice_ref: Option<PathBuf>,
-    #[arg(long, value_name = "TEXT", help = "Breeze or Lure: the exact transcript of --voice-ref")]
+    #[arg(long, value_name = "TEXT", help = "Breeze: the exact transcript of --voice-ref")]
     voice_text: Option<String>,
-    #[arg(long, default_value_t = 8881, help = "Port for the Breeze or Lure voice server")]
+    #[arg(long, default_value_t = 8881, help = "Port for the Breeze voice server")]
     tts_port: u16,
-    #[arg(
-        long,
-        default_value = "wade",
-        help = "Lure: preset voice when no --voice-ref is given: nora, jess, wade, imogen, callum or tobi"
-    )]
-    voice: String,
-    #[arg(long, default_value = "Easton", help = "Phonon: a catalog voice name or a .safetensors voice file")]
-    phonon_voice: String,
-    #[arg(long, default_value = "f32", help = "Phonon: weight precision, f32 or a quantization like q8_0 or q4k")]
-    tts_quant: Quant,
-    #[arg(long, help = "Phonon: CPU threads to use [default: 4]")]
-    tts_threads: Option<usize>,
-    #[arg(long, default_value_t = 160, help = "Audio the recognizer takes per step, in ms: 160, 320 or 1280")]
-    chunk_ms: u32,
-    #[arg(
-        long,
-        default_value_t = 160,
-        help = "Silence the recognizer waits for before it signals the end of an utterance"
-    )]
-    eou_debounce_ms: u32,
-    #[arg(
-        long,
-        default_value_t = 80,
-        help = "Without a turn verdict, reply this long after the end-of-utterance signal"
-    )]
-    hold_ms: u64,
-    #[arg(long, default_value_t = 250, help = "Quiet time after the last recognized word before a reply is prepared")]
-    speculate_ms: u64,
-    #[arg(
-        long,
-        default_value_t = 800,
-        help = "Quiet time after the last recognized word before replying without an end-of-utterance signal"
-    )]
-    max_wait_ms: u64,
-    #[arg(long, default_value_t = 350, help = "With a finished-turn verdict, reply this long after the voice stops")]
-    settle_ms: u64,
-    #[arg(
-        long,
-        default_value_t = 1500,
-        help = "With an unfinished-turn verdict, wait this long after the voice stops"
-    )]
-    patience_ms: u64,
-    #[arg(
-        long,
-        default_value_t = 0.5,
-        help = "Turn-completion score, from 0 to 1, above which the user counts as finished"
-    )]
-    turn_threshold: f32,
-    #[arg(
-        long,
-        help = "Disable the voice-activity and turn-completion models; this also turns off the second pass, reacting while the user talks, and yielding"
-    )]
-    no_smart_turn: bool,
-    #[arg(long, help = "Disable re-transcribing each finished utterance with the larger model")]
-    no_second_pass: bool,
-    #[arg(long, default_value_t = 2, help = "Words the user has to say over a reply to interrupt it")]
-    barge_words: usize,
     #[arg(long, help = "Turn off echo cancellation, for use with headphones")]
     no_aec: bool,
     #[arg(
@@ -254,10 +186,6 @@ struct Args {
     no_tools: bool,
     #[arg(long, value_name = "FILE", help = "Use the system prompt in FILE instead of the built-in one")]
     system_prompt: Option<PathBuf>,
-    #[arg(long, default_value_t = 90, help = "Most tokens a single reply may use")]
-    max_tokens: u32,
-    #[arg(long, default_value_t = 0.7, help = "Sampling temperature for replies")]
-    temperature: f32,
     #[arg(long, value_name = "NAME", help = "Microphone to use, by name or part of it [default: the system input]")]
     input_device: Option<String>,
     #[arg(long, value_name = "NAME", help = "Speakers to use, by name or part of it [default: the system output]")]
@@ -288,12 +216,10 @@ fn main() -> Result<()> {
     };
 
     log::info!("loading speech, tts and llm (first run downloads and compiles models, this can take a few minutes)");
-    let second_pass = !args.no_second_pass && !args.no_smart_turn;
-    let speech_cfg =
-        SpeechConfig { chunk_ms: args.chunk_ms, eou_debounce_ms: args.eou_debounce_ms, aec: !args.no_aec, second_pass };
+    let aec = !args.no_aec;
     let base_url = args.llm_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}/v1", args.port));
 
-    let (cleaned_tx, cleaned_rx) = if speech_cfg.aec && !args.no_smart_turn {
+    let (cleaned_tx, cleaned_rx) = if aec {
         let (tx, rx) = std::sync::mpsc::channel::<Vec<f32>>();
         (Some(tx), Some(rx))
     } else {
@@ -309,7 +235,7 @@ fn main() -> Result<()> {
         let speech = s.spawn(move || {
             let t = Instant::now();
             let speech = Speech::start(
-                speech_cfg,
+                aec,
                 Box::new(move |ev| {
                     let _ = tx.send(Event::Speech(ev, Instant::now()));
                 }),
@@ -324,26 +250,22 @@ fn main() -> Result<()> {
         });
         let engine = s.spawn(|| -> Result<Engine> {
             let t = Instant::now();
-            if args.tts != "phonon" {
+            if args.tts == "breeze" {
                 let cfg = VoiceConfig {
-                    kind: if args.tts == "lure" { Kind::Lure } else { Kind::Breeze },
                     design: args.voice_design.clone(),
                     port: args.tts_port,
-                    voice: args.voice.clone(),
                     ref_wav: args.voice_ref.clone(),
                     ref_text: args.voice_text.clone(),
-                    flow: !args.no_flow,
                 };
                 match Voice::start(&cfg) {
                     Ok(voice) => return Ok(Engine::Sidecar(voice)),
-                    Err(e) => log::warn!("the {} voice is unavailable, using Phonon instead: {e:#}", args.tts),
+                    Err(e) => log::warn!("the breeze voice is unavailable, using Phonon instead: {e:#}"),
                 }
             }
-            let tts = Tts::load(&TtsConfig { quant: args.tts_quant, threads: args.tts_threads })?;
-            let voice = tts.voice(&args.phonon_voice)?;
-            tts.synthesize(&voice, WARMUP_TEXT, &AtomicBool::new(false), &mut |_: &[f32]| Ok(()))?;
+            let tts = Tts::load()?;
+            tts.synthesize(WARMUP_TEXT, &AtomicBool::new(false), &mut |_: &[f32]| Ok(()))?;
             log::info!("tts ready after {:.1}s", t.elapsed().as_secs_f32());
-            Ok(Engine::Phonon(tts, voice))
+            Ok(Engine::Phonon(tts))
         });
         (joined(server, "llm server"), joined(speech, "speech"), joined(engine, "tts"))
     });
@@ -351,24 +273,16 @@ fn main() -> Result<()> {
     let speech = Arc::new(speech?);
     let engine = engine?;
 
-    let (detector, voice_reset) = if args.no_smart_turn {
-        (None, None)
-    } else {
+    let (detector, voice_reset) = {
         let tx = events_tx.clone();
-        let cfg = turn::TurnConfig { threshold: args.turn_threshold };
-        let refine: Option<turn::Refine> = second_pass.then(|| {
-            let speech = speech.clone();
-            Box::new(move |audio: &[f32]| speech.transcribe(audio)) as turn::Refine
-        });
-        let (detector, reset) = turn::Detector::load(
-            cfg,
+        let speech = speech.clone();
+        turn::Detector::load(
             Box::new(move |ev| {
                 let _ = tx.send(Event::Voice(ev));
             }),
-            refine,
+            Box::new(move |audio: &[f32]| speech.transcribe(audio)),
         )
-        .context("turn detector failed")?;
-        (Some(detector), Some(reset))
+        .context("turn detector failed")?
     };
 
     let (capture, playback, audio_guard) = audio::open(&audio::AudioConfig {
@@ -382,22 +296,14 @@ fn main() -> Result<()> {
     let gate = Arc::new(Gate::new(playback.clone(), engine.sample_rate()));
     let sounds = engine.sounds();
     let voice_id = match &engine {
-        Engine::Phonon(..) => format!("phonon|{}|{}", args.phonon_voice, args.tts_quant.as_str()),
-        Engine::Sidecar(sidecar) => match sidecar.kind() {
-            Kind::Breeze => format!("breeze|{}|{:?}|{:?}", args.voice_design, args.voice_ref, args.voice_text),
-            Kind::Lure => format!("lure|{}|{:?}|{:?}", args.voice, args.voice_ref, args.voice_text),
-        },
+        Engine::Phonon(_) => format!("phonon|{}|{}", phonon::VOICE, phonon::QUANT.as_str()),
+        Engine::Sidecar(_) => format!("breeze|{}|{:?}|{:?}", args.voice_design, args.voice_ref, args.voice_text),
     };
-    let bank = Arc::new(if args.no_reactions { Bank::default() } else { Bank::build(&engine, &voice_id) });
+    let bank = Arc::new(Bank::build(&engine, &voice_id));
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    let llm = Llm::new(LlmConfig {
-        base_url,
-        model: args.model.clone(),
-        max_tokens: args.max_tokens,
-        temperature: args.temperature,
-    });
+    let llm = Llm::new(&base_url, &args.model);
     let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
     let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
     let talking = Arc::new(AtomicBool::new(false));
@@ -431,18 +337,11 @@ fn main() -> Result<()> {
         jobs,
         events_tx,
         Settings {
-            hold: Duration::from_millis(args.hold_ms),
-            speculate: Duration::from_millis(args.speculate_ms),
-            max_wait: Duration::from_millis(args.max_wait_ms),
-            settle: Duration::from_millis(args.settle_ms),
-            patience: Duration::from_millis(args.patience_ms),
             nudge: Duration::from_millis(args.nudge_ms),
-            wordless: !args.no_wordless,
             bank,
-            backchannel: !args.no_backchannel && !args.no_smart_turn,
-            yielding: !args.no_yield && !args.no_smart_turn && args.no_aec,
+            backchannel: !args.no_backchannel,
+            yielding: args.no_aec,
             sounds,
-            barge_words: args.barge_words,
             hands,
             talking,
             busy,

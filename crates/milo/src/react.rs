@@ -61,7 +61,6 @@ pub enum Probe {
     Miss,
 }
 
-#[derive(Default)]
 pub struct Bank {
     clips: Vec<Vec<Vec<f32>>>,
     order: Vec<(usize, &'static str)>,

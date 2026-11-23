@@ -50,22 +50,24 @@ pub fn spawn(
     mut capture: Capture,
     speech: Arc<Speech>,
     clock: Arc<AudioClock>,
-    mut detector: Option<Detector>,
+    mut detector: Detector,
     cleaned: Option<Receiver<Vec<f32>>>,
     events: UnboundedSender<Event>,
 ) -> std::io::Result<JoinHandle<()>> {
-    if let Some(cleaned) = cleaned
-        && let Some(mut detector) = detector.take()
-    {
-        let clock = clock.clone();
-        thread::Builder::new().name("detect".into()).spawn(move || {
-            let mut heard = 0u64;
-            for audio in cleaned {
-                heard += audio.len() as u64;
-                detector.push(&audio, clock.at(heard).unwrap_or_else(Instant::now));
-            }
-        })?;
-    }
+    let mut direct = match cleaned {
+        Some(cleaned) => {
+            let clock = clock.clone();
+            thread::Builder::new().name("detect".into()).spawn(move || {
+                let mut heard = 0u64;
+                for audio in cleaned {
+                    heard += audio.len() as u64;
+                    detector.push(&audio, clock.at(heard).unwrap_or_else(Instant::now));
+                }
+            })?;
+            None
+        }
+        None => Some(detector),
+    };
     thread::Builder::new().name("capture".into()).spawn(move || {
         let mut mic = Vec::with_capacity(1024);
         let mut reference = Vec::with_capacity(1024);
@@ -77,7 +79,7 @@ pub fn spawn(
                     speech.push(&mic, &reference);
                     pushed += mic.len() as u64;
                     clock.record(pushed, at);
-                    if let Some(detector) = &mut detector {
+                    if let Some(detector) = &mut direct {
                         detector.push(&mic, at);
                     }
                 }

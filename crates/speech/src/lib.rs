@@ -4,14 +4,6 @@ use std::ptr::{self, NonNull};
 
 use anyhow::{Result, anyhow};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SpeechConfig {
-    pub chunk_ms: u32,
-    pub eou_debounce_ms: u32,
-    pub aec: bool,
-    pub second_pass: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpeechEvent {
     Partial { text: String, speech_end_ms: Option<u64> },
@@ -31,10 +23,7 @@ type AudioFn = extern "C" fn(*mut c_void, *const f32, usize);
 
 unsafe extern "C" {
     fn milo_speech_start(
-        chunk_ms: u32,
-        eou_debounce_ms: u32,
         aec: bool,
-        second_pass: bool,
         callback: EventFn,
         cleaned: Option<AudioFn>,
         context: *mut c_void,
@@ -93,24 +82,13 @@ unsafe impl Send for Speech {}
 unsafe impl Sync for Speech {}
 
 impl Speech {
-    pub fn start(cfg: SpeechConfig, on_event: OnEvent, on_cleaned: Option<OnCleaned>) -> Result<Speech> {
+    pub fn start(aec: bool, on_event: OnEvent, on_cleaned: Option<OnCleaned>) -> Result<Speech> {
         let cleaned = on_cleaned.is_some().then_some(cleaned_trampoline as AudioFn);
         let handler = Box::into_raw(Box::new(Handler { event: on_event, cleaned: on_cleaned }));
         let mut error: *mut c_char = ptr::null_mut();
-        let handle = unsafe {
-            milo_speech_start(
-                cfg.chunk_ms,
-                cfg.eou_debounce_ms,
-                cfg.aec,
-                cfg.second_pass,
-                trampoline,
-                cleaned,
-                handler.cast(),
-                &mut error,
-            )
-        };
+        let handle = unsafe { milo_speech_start(aec, trampoline, cleaned, handler.cast(), &mut error) };
         match NonNull::new(handle) {
-            Some(handle) => Ok(Speech { handle, handler, aec: cfg.aec }),
+            Some(handle) => Ok(Speech { handle, handler, aec }),
             None => {
                 drop(unsafe { Box::from_raw(handler) });
                 let message = if error.is_null() {

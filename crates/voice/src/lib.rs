@@ -9,67 +9,20 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 const SCRIPT: &str = include_str!("../../../sidecar/voice_server.py");
-const VOICES_URL: &str = "https://huggingface.co/spaces/smirki/lure-tts/resolve/main/voices";
-pub const VOICES: &[(&str, &str)] = &[
-    ("nora", "warm, American"),
-    ("jess", "friendly, Canadian"),
-    ("wade", "deep drawl, Southern US"),
-    ("imogen", "poised, British"),
-    ("callum", "relaxed, London"),
-    ("tobi", "low and intimate, Nigerian"),
-];
+const ENGINE: &str = "breeze";
 const START_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SAMPLE_RATE: u32 = 24000;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Breeze,
-    Lure,
-}
-
-impl Kind {
-    fn name(self) -> &'static str {
-        match self {
-            Kind::Breeze => "breeze",
-            Kind::Lure => "lure",
-        }
-    }
-
-    pub fn sounds(self) -> &'static [&'static str] {
-        match self {
-            Kind::Breeze => &["laugh", "sigh", "cough", "clears throat"],
-            Kind::Lure => &[
-                "laugh",
-                "chuckle",
-                "giggle",
-                "nervous laugh",
-                "sigh",
-                "relieved sigh",
-                "exhale",
-                "inhale",
-                "sharp inhale",
-                "gasp",
-                "happy gasp",
-                "hmm",
-                "clears throat",
-            ],
-        }
-    }
-}
+pub const SOUNDS: &[&str] = &["laugh", "sigh", "cough", "clears throat"];
 
 #[derive(Clone, Debug)]
 pub struct VoiceConfig {
-    pub kind: Kind,
     pub design: String,
     pub port: u16,
-    pub voice: String,
     pub ref_wav: Option<PathBuf>,
     pub ref_text: Option<String>,
-    pub flow: bool,
 }
 
 pub struct Voice {
-    kind: Kind,
     agent: ureq::Agent,
     url: String,
     child: Option<Child>,
@@ -78,37 +31,6 @@ pub struct Voice {
 fn root() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     Ok(PathBuf::from(home).join(".cache/milo"))
-}
-
-fn preset(root: &Path, voice: &str) -> Result<(PathBuf, String)> {
-    let name = voice.to_lowercase();
-    if !VOICES.iter().any(|(v, _)| *v == name) {
-        let known: Vec<String> = VOICES.iter().map(|(v, d)| format!("{v} ({d})")).collect();
-        bail!("unknown voice '{voice}'; choose one of: {}", known.join(", "));
-    }
-    let dir = root.join("voices");
-    std::fs::create_dir_all(&dir)?;
-    let wav = dir.join(format!("{name}.flac"));
-    let txt = dir.join(format!("{name}.txt"));
-    for (path, ext) in [(&wav, "flac"), (&txt, "txt")] {
-        if path.metadata().is_ok_and(|m| m.len() > 0) {
-            continue;
-        }
-        let url = format!("{VOICES_URL}/{name}.{ext}");
-        let mut bytes = Vec::new();
-        ureq::get(&url)
-            .call()
-            .map_err(|e| anyhow!("download {url}: {e}"))?
-            .into_reader()
-            .read_to_end(&mut bytes)
-            .with_context(|| format!("download {url}"))?;
-        std::fs::write(path, bytes).with_context(|| format!("write {}", path.display()))?;
-    }
-    let text = std::fs::read_to_string(&txt)?.trim().to_string();
-    if text.is_empty() {
-        bail!("the transcript for voice '{name}' is empty");
-    }
-    Ok((wav, text))
 }
 
 fn tail(path: &Path, lines: usize) -> String {
@@ -123,13 +45,12 @@ impl Voice {
         let base = format!("http://127.0.0.1:{}", cfg.port);
         let health = format!("{base}/health");
         let url = format!("{base}/speak");
-        let name = cfg.kind.name();
         if let Ok(response) = agent.get(&health).call() {
             let body: serde_json::Value = response.into_json().unwrap_or_default();
-            if body["engine"].as_str() != Some(name) {
+            if body["engine"].as_str() != Some(ENGINE) {
                 bail!("port {} is already serving a different voice; stop it or pass another --tts-port", cfg.port);
             }
-            return Ok(Voice { kind: cfg.kind, agent, url, child: None });
+            return Ok(Voice { agent, url, child: None });
         }
 
         let root = root()?;
@@ -139,8 +60,7 @@ impl Voice {
             bail!("the voice environment {} is missing; run ./setup.sh", venv.display());
         }
         let reference = match (&cfg.ref_wav, &cfg.ref_text) {
-            (Some(wav), Some(text)) => Some((wav.clone(), text.clone())),
-            (None, None) if cfg.kind == Kind::Lure => Some(preset(&root, &cfg.voice)?),
+            (Some(wav), Some(text)) => Some((wav, text)),
             (None, None) => None,
             _ => bail!("a reference voice needs both the clip and its exact transcript"),
         };
@@ -155,24 +75,18 @@ impl Voice {
         let log = File::create(&log_path).with_context(|| format!("create {}", log_path.display()))?;
         let mut cmd = Command::new(&python);
         cmd.arg(&script)
-            .args(["--engine", name])
             .args(["--port", &cfg.port.to_string()])
             .args(["--ppid", &std::process::id().to_string()])
-            .arg("--model-dir")
-            .arg(root.join("lure-model"))
             .arg("--voices-dir")
             .arg(root.join("voices"))
             .args(["--design", &cfg.design]);
-        if let Some((wav, text)) = &reference {
-            cmd.arg("--ref-wav").arg(wav).args(["--ref-text", text]);
-        }
-        if !cfg.flow {
-            cmd.arg("--no-flow");
+        if let Some((wav, text)) = reference {
+            cmd.arg("--ref-wav").arg(wav).arg("--ref-text").arg(text);
         }
         cmd.env("PYTHONUNBUFFERED", "1").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log).process_group(0);
-        log::info!("starting the {name} voice on port {}, log {}", cfg.port, log_path.display());
+        log::info!("starting the {ENGINE} voice on port {}, log {}", cfg.port, log_path.display());
         let child = cmd.spawn().with_context(|| format!("spawn {}", python.display()))?;
-        let mut voice = Voice { kind: cfg.kind, agent, url, child: Some(child) };
+        let mut voice = Voice { agent, url, child: Some(child) };
 
         let start = Instant::now();
         let mut noted = start;
@@ -184,10 +98,10 @@ impl Voice {
             if let Some(child) = voice.child.as_mut()
                 && let Some(status) = child.try_wait()?
             {
-                bail!("the {name} voice exited ({status}) before becoming ready:\n{}", tail(&log_path, 30));
+                bail!("the {ENGINE} voice exited ({status}) before becoming ready:\n{}", tail(&log_path, 30));
             }
             if start.elapsed() > START_TIMEOUT {
-                bail!("the {name} voice was not ready after {}s", START_TIMEOUT.as_secs());
+                bail!("the {ENGINE} voice was not ready after {}s", START_TIMEOUT.as_secs());
             }
             if noted.elapsed() > Duration::from_secs(15) {
                 let last = tail(&log_path, 1);
@@ -196,10 +110,6 @@ impl Voice {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-    }
-
-    pub fn kind(&self) -> Kind {
-        self.kind
     }
 
     pub fn sample_rate(&self) -> u32 {

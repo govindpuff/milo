@@ -25,11 +25,7 @@ const MAX_UTTERANCE: usize = 30 * 16000;
 const EARLY_MS: u32 = 128;
 const VAD_THRESHOLD: f32 = 0.5;
 const STOP_MS: u32 = 200;
-
-#[derive(Clone, Copy, Debug)]
-pub struct TurnConfig {
-    pub threshold: f32,
-}
+const TURN_THRESHOLD: f32 = 0.5;
 
 #[derive(Clone, Debug)]
 pub enum TurnEvent {
@@ -88,7 +84,7 @@ pub struct Detector {
     refine_sent: bool,
     voiced: u32,
     jobs: Sender<Job>,
-    refine: Option<Sender<(u64, Arc<Vec<f32>>)>>,
+    refine: Sender<(u64, Arc<Vec<f32>>)>,
     on_event: Handler,
 }
 
@@ -129,11 +125,7 @@ fn predict(session: &mut Session, mel: &Mel, audio: &[f32]) -> Result<f32> {
 }
 
 impl Detector {
-    pub fn load(
-        cfg: TurnConfig,
-        on_event: Box<dyn Fn(TurnEvent) + Send + Sync>,
-        refine: Option<Refine>,
-    ) -> Result<(Detector, Reset)> {
+    pub fn load(on_event: Box<dyn Fn(TurnEvent) + Send + Sync>, refine: Refine) -> Result<(Detector, Reset)> {
         let env = ort::init().with_name("milo").build().map_err(|e| anyhow!("onnx runtime: {e}"))?;
         let vad = session(&env, &fetch(VAD_URL, "silero-vad.onnx")?)?;
         let mut turn = session(&env, &fetch(TURN_URL, "smart-turn-v3.2-cpu.onnx")?)?;
@@ -155,7 +147,7 @@ impl Detector {
                 emit(TurnEvent::End {
                     seq: job.seq,
                     prob,
-                    complete: prob.map(|p| p > cfg.threshold),
+                    complete: prob.map(|p| p > TURN_THRESHOLD),
                     refining: job.refining,
                     voiced_ms: job.voiced_ms,
                     speech_end: job.speech_end,
@@ -164,19 +156,13 @@ impl Detector {
             }
         })?;
 
-        let refine = match refine {
-            Some(run) => {
-                let (tx, rx) = mpsc::channel::<(u64, Arc<Vec<f32>>)>();
-                let emit = on_event.clone();
-                thread::Builder::new().name("refine".into()).spawn(move || {
-                    for (seq, audio) in rx {
-                        emit(TurnEvent::Refined { seq, text: run(&audio) });
-                    }
-                })?;
-                Some(tx)
+        let (tx, rx) = mpsc::channel::<(u64, Arc<Vec<f32>>)>();
+        let emit = on_event.clone();
+        thread::Builder::new().name("refine".into()).spawn(move || {
+            for (seq, audio) in rx {
+                emit(TurnEvent::Refined { seq, text: refine(&audio) });
             }
-            None => None,
-        };
+        })?;
 
         let reset = Arc::new(AtomicBool::new(false));
         let now = Instant::now();
@@ -196,7 +182,7 @@ impl Detector {
             seq: 0,
             reset: reset.clone(),
             jobs,
-            refine,
+            refine: tx,
             on_event,
         };
         Ok((detector, Reset(reset)))
@@ -254,13 +240,9 @@ impl Detector {
             }
             self.quiet += 1;
             let mut audio = None;
-            if !self.refine_sent
-                && !self.truncated
-                && self.quiet * FRAME_MS >= EARLY_MS
-                && let Some(tx) = &self.refine
-            {
+            if !self.refine_sent && !self.truncated && self.quiet * FRAME_MS >= EARLY_MS {
                 let snapshot = Arc::new(self.history.clone());
-                self.refine_sent = tx.send((self.seq, snapshot.clone())).is_ok();
+                self.refine_sent = self.refine.send((self.seq, snapshot.clone())).is_ok();
                 audio = Some(snapshot);
             }
             if self.quiet * FRAME_MS >= STOP_MS {

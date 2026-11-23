@@ -7,12 +7,10 @@ import sys
 import threading
 import time
 import traceback
-from importlib.util import find_spec
 
 import numpy as np
 
 BREEZE_REPO = "mlx-community/Breeze-TTS-2-mlx-4bit"
-LURE_REPO = "Tesslate/Lure-TTS-0.6B"
 REF_TEXT = "Oh, um, yeah, I was just thinking about that, actually. It's kind of funny how things work out, you know?"
 CHUNK_S = 0.16
 CONTEXT_S = 25.0
@@ -33,30 +31,12 @@ def pcm16(x):
     return (np.clip(np.asarray(x, dtype=np.float32), -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 
-def make_lure(args):
-    if not os.path.exists(os.path.join(args.model_dir, "model.safetensors")):
-        from huggingface_hub import snapshot_download
-
-        print(f"downloading {LURE_REPO}", flush=True)
-        snapshot_download(LURE_REPO, local_dir=args.model_dir, ignore_patterns=["assets/*"])
-    from lure_tts import Lure
-
-    tts = Lure.load(args.model_dir, backend="mlx", compile_cp=True, pipeline=True)
-    voice = tts.make_voice(args.ref_wav, args.ref_text, name="milo")
-
-    def speak(text, instruct, session=None, lead=None):
-        yield from tts.stream(text, voice, instruct=instruct, first_chunk_frames=2)
-
-    return speak, None
-
-
 class Breeze:
-    def __init__(self, model, ref_wav, ref_text, flow):
+    def __init__(self, model, ref_wav, ref_text):
         import mlx.core as mx
 
         self.mx = mx
         self.m = model
-        self.flow = flow
         self.speaker = model._speaker(None)
         self.decoder = model.audio_tokenizer.decoder
         rate = model.audio_tokenizer.decode_upsample_rate
@@ -97,13 +77,13 @@ class Breeze:
         mx, m = self.mx, self.m
         target = f"{self.speaker}<ins_bos>{instruct}<ins_eos>{text}" if instruct else f"{self.speaker}{text}"
         live, self.live = self.live, None
-        if self.flow and session is not None and live is not None and live[0] == session and live[2] < self.limit:
+        if session is not None and live is not None and live[0] == session and live[2] < self.limit:
             cache, total = live[1], live[2]
             parts = [self.eos, self.text(target)]
         else:
             cache, total = self.fork(), 0
             parts = []
-            if self.flow and lead in self.leads:
+            if lead in self.leads:
                 said, codes = self.leads[lead]
                 parts += [self.text(f"{self.speaker}{said}"), m.backbone_model.embed_tokens(codes), self.eos]
                 total = codes.shape[1]
@@ -164,7 +144,7 @@ def make_breeze(args):
             ]
             sf.write(ref_wav, np.concatenate(parts), model.sample_rate)
     try:
-        breeze = Breeze(model, ref_wav, ref_text, args.flow)
+        breeze = Breeze(model, ref_wav, ref_text)
         return breeze.speak, breeze.lead
     except Exception:
         traceback.print_exc()
@@ -189,16 +169,16 @@ def make_breeze(args):
 
 
 class Worker(threading.Thread):
-    def __init__(self, make, args):
+    def __init__(self, args):
         super().__init__(daemon=True)
-        self.make, self.args = make, args
+        self.args = args
         self.jobs = queue.Queue()
         self.loaded = threading.Event()
         self.error = None
 
     def run(self):
         try:
-            speak, lead = self.make(self.args)
+            speak, lead = make_breeze(self.args)
             for _ in speak("Hey. Okay, I'm here.", None):
                 pass
         except Exception as e:
@@ -233,23 +213,17 @@ class Worker(threading.Thread):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", choices=["lure", "breeze"], required=True)
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--ppid", type=int, required=True)
-    ap.add_argument("--model-dir", required=True)
     ap.add_argument("--voices-dir", required=True)
     ap.add_argument("--design", required=True)
     ap.add_argument("--ref-wav", default="")
     ap.add_argument("--ref-text", default="")
-    ap.add_argument("--no-flow", dest="flow", action="store_false")
     args = ap.parse_args()
 
-    if args.engine == "lure" and find_spec("lure_tts") is None:
-        print("Lure is not installed; run ./setup.sh --lure", flush=True)
-        return 1
     threading.Thread(target=watch_parent, args=(args.ppid,), daemon=True).start()
 
-    worker = Worker(make_lure if args.engine == "lure" else make_breeze, args)
+    worker = Worker(args)
     worker.start()
     worker.loaded.wait()
     if worker.error is not None:
@@ -264,7 +238,7 @@ def main():
 
     @app.get("/health")
     def health():
-        return {"ok": True, "engine": args.engine}
+        return {"ok": True, "engine": "breeze"}
 
     @app.post("/speak")
     async def speak(request: Request):

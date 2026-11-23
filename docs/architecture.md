@@ -7,8 +7,8 @@ code. For installation and use, see the [README](../README.md).
 
 milo is one Rust binary. It runs a pipeline from the microphone to the speakers
 and starts up to two child processes: the Rapid-MLX model server and, for the
-Breeze and Lure voices, a Python voice server. The following diagram shows how
-audio and text move through the pipeline:
+Breeze voice, a Python voice server. The following diagram shows how audio and
+text move through the pipeline:
 
 ```text
 microphone                                                         speakers
@@ -51,7 +51,7 @@ The workspace has the following crates:
 | `crates/speech` | Rust bindings to `swift/MiloSpeech`, a Swift static library that wraps FluidAudio: LocalVQE echo removal, Parakeet EOU streaming recognition, and Parakeet TDT 0.6B v2 for the second pass. Its build script runs `swift build` and links the result. |
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn v3.2) through ONNX Runtime, and the second-pass thread. It downloads both models on first use. |
 | `crates/llm` | The client for the OpenAI-compatible model server, the sentence chunker, and the Rapid-MLX launcher. |
-| `crates/voice` | Starts the Python voice server for Breeze or Lure, and streams audio from it. The server script, `sidecar/voice_server.py`, is embedded in the binary. |
+| `crates/voice` | Starts the Python voice server for Breeze, and streams audio from it. The server script, `sidecar/voice_server.py`, is embedded in the binary. |
 | `crates/phonon` | The Phonon voice, which runs in-process through the `ptts` crate. milo uses it with `--tts phonon` and when the voice server can't start. |
 
 The `setup.sh` script installs the tools, creates the voice server's Python
@@ -111,29 +111,27 @@ sound.
 
 ### Streaming recognition
 
-Parakeet EOU processes audio in 160 ms steps (`--chunk-ms`). Each partial
-transcript carries everything that you've said since the recognizer was last
-cleared, and the audio-clock time of the last recognized token. The recognizer
-signals the end of an utterance after `--eou-debounce-ms` (160 ms) of silence.
-On an end of utterance, the controller rearms the recognizer and keeps the
-transcript, so further speech extends it. On commit, the controller clears the
-transcript. Fillers such as "um" and "uh" don't count as words.
+Parakeet EOU processes audio in 160 ms steps. Each partial transcript carries
+everything that you've said since the recognizer was last cleared, and the
+audio-clock time of the last recognized token. The recognizer signals the end
+of an utterance after 160 ms of silence. On an end of utterance, the controller
+rearms the recognizer and keeps the transcript, so further speech extends it.
+On commit, the controller clears the transcript. Fillers such as "um" and "uh"
+don't count as words.
 
 ### Voice activity and the turn verdict
 
 The detector runs Silero VAD on 32 ms frames. Two voiced frames in a row start
 a voice segment and send a `Start` event. After 200 ms of silence, the detector
 sends the audio since the last commit, up to 30 seconds, to Smart Turn, which
-scores the last 8 seconds for whether you've finished. A score above
-`--turn-threshold` (0.5) is a *finished* verdict; otherwise, the verdict is
-*unfinished*. The verdict arrives in an `End` event, with the time when your
-voice stopped.
+scores the last 8 seconds for whether you've finished. A score above 0.5 is a
+*finished* verdict; otherwise, the verdict is *unfinished*. The verdict arrives
+in an `End` event, with the time when your voice stopped.
 
 A verdict counts only if the last recognized token came no more than 1.5
 seconds after the voice end that the verdict describes, so that an old verdict
-can't end a newer utterance. A
-transcript that ends with a question mark counts as finished, whatever the
-score.
+can't end a newer utterance. A transcript that ends with a question mark counts
+as finished, whatever the score.
 
 ### Second pass
 
@@ -142,18 +140,17 @@ commit to Parakeet TDT 0.6B v2 on the refine thread. If the result has
 different words from the streaming transcript, the result replaces the
 transcript, and the controller restarts the speculative reply from it. Until
 your voice resumes, the controller ignores later streaming partials.
-`--no-second-pass` turns this off.
 
 If neither recognizer finds words in a voice segment with 190 to 1,500 ms of
 voice, the controller treats it as a wordless sound, such as "hmm" or a short
-laugh, and uses `(hmm)` as your message. `--no-wordless` turns this off.
+laugh, and uses `(hmm)` as your message.
 
 ### Speculative reply
 
 When no turn is running, the controller starts a speculative turn as soon as
 one of the following happens:
 
-- `--speculate-ms` (250 ms) passes without a new partial transcript.
+- No new partial transcript arrives for 250 ms.
 - The second pass returns.
 - A finished verdict arrives.
 
@@ -176,19 +173,15 @@ first rule that matches applies:
    1.6 seconds after your voice stopped, so that a following sentence can join
    it.
 1. While a second pass is running, wait for up to 450 ms.
-1. With a finished verdict, commit `--settle-ms` (350 ms) after your voice
-   stopped. If the transcript ends with punctuation and the score is 0.9 or
-   more, commit after 220 ms.
-1. With an unfinished verdict, commit `--patience-ms` (1,500 ms) after your
-   voice stopped. The wait is 600 ms for three words or fewer, or for a phrase
-   such as "what's it called"; 3 seconds when the transcript ends on a
-   connector word; and 500 ms longer after a listening sound.
-1. Without a verdict, commit `--hold-ms` (80 ms) after the end of utterance, or
-   `--max-wait-ms` (800 ms) after the last partial transcript.
-
-With `--no-smart-turn`, there's no voice activity and no verdict, so the rules
-that depend on them don't apply. That option also turns off the second pass,
-listening sounds, and yielding.
+1. With a finished verdict, commit 350 ms after your voice stopped. If the
+   transcript ends with punctuation and the score is 0.9 or more, commit after
+   220 ms.
+1. With an unfinished verdict, commit 1,500 ms after your voice stopped. The
+   wait is 600 ms for three words or fewer, or for a phrase such as "what's it
+   called"; 3 seconds when the transcript ends on a connector word; and 500 ms
+   longer after a listening sound.
+1. Without a verdict, commit 80 ms after the end of utterance, or 800 ms after
+   the last partial transcript.
 
 ### Commit
 
@@ -218,10 +211,10 @@ When it commits a turn, the controller does the following:
   bank, such as "Oh no," that part is split off and played from its clip.
 - **Chunking.** `llm::chunker` removes Markdown and emoji and splits the text.
   The first chunk ends at the first clause boundary after three words, at the
-  end of a sentence, or after 12 words, and goes to the voice at once. The
-  rest of the reply goes to the voice as one request when the model finishes,
-  so that Breeze and Lure deliver it in one piece. The chunker doesn't split
-  numbers such as 3.5 or abbreviations such as "Dr."
+  end of a sentence, or after 12 words, and goes to the voice at once. The rest
+  of the reply goes to the voice as one request when the model finishes, so
+  that Breeze delivers it in one piece. The chunker doesn't split numbers such
+  as 3.5 or abbreviations such as "Dr."
 - **Length.** Generation stops after two full sentences of three or more words
   each. The limit is four sentences for tool results, and when you ask how,
   why, or for an explanation or a story.
@@ -252,7 +245,6 @@ request carries the turn ID as its `session`. A later request in the same
 session continues the cache and the audio decoder state of the earlier one, so
 the reply sounds like one delivery instead of separate sentences. A canceled
 request ends the session, and the context is capped at 25 seconds of audio.
-`--no-flow` makes each request independent.
 
 `crates/audio` resamples the voice's audio to the output device's rate. The
 output callback writes everything that it plays, silence included, to an echo
@@ -287,14 +279,14 @@ separated by `|`:
 While a committed reply is generating or playing, your voice can stop it in two
 ways:
 
-- **Barge-in**, from recognized words. A partial transcript with
-  `--barge-words` (2) or more new words stops the reply, and so does an end of
-  utterance with any new words more than one second after commit. Words that
-  are only acknowledgments, such as "yeah" or "uh-huh", don't count.
+- **Barge-in**, from recognized words. A partial transcript with two or more
+  new words stops the reply, and so does an end of utterance with any new words
+  more than one second after commit. Words that are only acknowledgments, such
+  as "yeah" or "uh-huh", don't count.
 - **Yielding**, from voice activity alone. Your voice must last 250 ms within
   1.5 seconds of the reply's first sound, or 700 ms later in the reply.
   Yielding is on only with `--no-aec`, for headphones, because on speakers the
-  reply's own sound can trigger it. `--no-yield` turns it off.
+  reply's own sound can trigger it.
 
 Either way, the result is one of the following:
 
@@ -337,8 +329,7 @@ milo uses the bank in the following ways:
   with at least five recognized words, a generic reaction plays quietly, at
   most once every 6 seconds.
 
-`--no-backchannel` turns off the listening sounds, and `--no-reactions` turns
-off the bank.
+`--no-backchannel` turns off the listening sounds.
 
 ## Follow-ups
 
@@ -454,17 +445,17 @@ seconds, and then sends `SIGKILL`.
 
 ### Voice server
 
-For Breeze and Lure, milo first sends `GET /health` to `127.0.0.1` on
-`--tts-port` (8881). If a voice server with the same engine answers, milo uses
-it, and a server with another engine is an error. Otherwise, milo writes the
-embedded `voice_server.py` to `~/.cache/milo`, starts it with the Python in
-`~/.cache/milo/venv` in its own process group, and waits up to 30 minutes for
-it to answer. The server's output goes to `$TMPDIR/milo-voice-PORT.log`.
+For Breeze, milo first sends `GET /health` to `127.0.0.1` on `--tts-port`
+(8881). If a Breeze voice server answers, milo uses it, and any other answer is
+an error. Otherwise, milo writes the embedded `voice_server.py` to
+`~/.cache/milo`, starts it with the Python in `~/.cache/milo/venv` in its own
+process group, and waits up to 30 minutes for it to answer. The server's output
+goes to `$TMPDIR/milo-voice-PORT.log`.
 
 The server loads the model, prepares the reference voice, speaks a warm-up
 line, and then serves the following endpoints:
 
-- `GET /health`: returns the engine name.
+- `GET /health`: returns the engine name, `breeze`.
 - `POST /speak`: takes `text`, `instruct` (the delivery note), `session`, and
   `lead`, and streams 16-bit little-endian PCM at 24 kHz. Closing the
   connection cancels the request.
@@ -473,9 +464,7 @@ line, and then serves the following endpoints:
 
 Without `--voice-ref`, Breeze creates the reference voice once from
 `--voice-design`, by speaking a fixed line in that voice, and saves it as a WAV
-file in `~/.cache/milo/voices`. For Lure, milo downloads the preset voices from
-the Lure demo space on Hugging Face to `~/.cache/milo/voices`, and the voice
-server downloads the Lure model to `~/.cache/milo/lure-model`.
+file in `~/.cache/milo/voices`.
 
 The server checks every second whether milo is still its parent process, and
 exits if it isn't. On exit, milo sends `SIGTERM` to the server's process group,
@@ -505,12 +494,10 @@ milo reads and writes the following files:
 | `~/.config/milo/tools.json` | Custom tools. |
 | `~/.cache/milo/venv/` | The voice server's Python environment, created by `setup.sh`. |
 | `~/.cache/milo/voice_server.py` | The voice server script, written from the binary at each start. |
-| `~/.cache/milo/voices/` | Designed Breeze voices and Lure preset voices. |
+| `~/.cache/milo/voices/` | Designed Breeze voices. |
 | `~/.cache/milo/clips/` | Recorded reaction clips, as raw 32-bit float samples. |
 | `~/.cache/milo/silero-vad.onnx` | The voice activity model. |
 | `~/.cache/milo/smart-turn-v3.2-cpu.onnx` | The end-of-turn model. |
-| `~/.cache/milo/lure-tts/` | The Lure code, cloned by `setup.sh --lure`. |
-| `~/.cache/milo/lure-model/` | The Lure model. |
 | `~/.cache/huggingface/hub/` | The language model, Breeze, and Phonon, in the default Hugging Face cache. |
 | `~/Library/Application Support/FluidAudio/Models/` | The speech recognition and echo removal models. |
 | `$TMPDIR/milo-rapid-mlx-PORT.log` | The model server's log. `PORT` is the server's port. |

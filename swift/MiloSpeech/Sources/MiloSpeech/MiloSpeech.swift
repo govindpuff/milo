@@ -13,11 +13,6 @@ private let eventInfo: Int32 = 3
 private let sampleRate = 16000
 private let queueWarnSamples: UInt64 = 8000
 
-struct MiloError: LocalizedError {
-    let errorDescription: String?
-    init(_ message: String) { errorDescription = message }
-}
-
 struct EventSink: @unchecked Sendable {
     let callback: MiloEventCallback
     let cleaned: MiloAudioCallback?
@@ -36,7 +31,7 @@ struct EventSink: @unchecked Sendable {
 final class Session: @unchecked Sendable {
     private let asr: StreamingEouAsrManager
     private let vqe: LocalVqeStream?
-    private let refiner: AsrManager?
+    private let refiner: AsrManager
     private let sink: EventSink
     private let format: AVAudioFormat
     private let lock = NSLock()
@@ -54,7 +49,7 @@ final class Session: @unchecked Sendable {
     private var eouTokenCount = 0
     private var latched = false
 
-    private init(asr: StreamingEouAsrManager, vqe: LocalVqeStream?, refiner: AsrManager?, sink: EventSink) {
+    private init(asr: StreamingEouAsrManager, vqe: LocalVqeStream?, refiner: AsrManager, sink: EventSink) {
         self.asr = asr
         self.vqe = vqe
         self.refiner = refiner
@@ -64,22 +59,11 @@ final class Session: @unchecked Sendable {
         (wake, wakeContinuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
     }
 
-    static func load(
-        chunkMs: UInt32, debounceMs: UInt32, aec: Bool, secondPass: Bool, sink: EventSink
-    ) async throws -> Session {
-        let chunk: StreamingChunkSize
-        switch chunkMs {
-        case 160: chunk = .ms160
-        case 320: chunk = .ms320
-        case 1280: chunk = .ms1280
-        default: throw MiloError("chunk_ms must be 160, 320 or 1280, got \(chunkMs)")
-        }
-        let asr = StreamingEouAsrManager(chunkSize: chunk, eouDebounceMs: Int(debounceMs))
+    static func load(aec: Bool, sink: EventSink) async throws -> Session {
+        let asr = StreamingEouAsrManager(chunkSize: .ms160, eouDebounceMs: 160)
         async let vqe = loadVqe(aec)
-        if secondPass {
-            sink.emit(eventInfo, "loading the second-pass transcription model (downloads and compiles on first run)")
-        }
-        async let refiner = loadRefiner(secondPass)
+        sink.emit(eventInfo, "loading the second-pass transcription model (downloads and compiles on first run)")
+        async let refiner = loadRefiner()
         try await asr.loadModels(to: nil, configuration: nil, progressHandler: nil)
         let session = Session(asr: asr, vqe: try await vqe, refiner: try await refiner, sink: sink)
         try await session.warm()
@@ -95,8 +79,7 @@ final class Session: @unchecked Sendable {
         return try await manager.makeStream()
     }
 
-    private static func loadRefiner(_ enabled: Bool) async throws -> AsrManager? {
-        guard enabled else { return nil }
+    private static func loadRefiner() async throws -> AsrManager {
         let models = try await AsrModels.downloadAndLoad(version: .v2)
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
@@ -104,7 +87,6 @@ final class Session: @unchecked Sendable {
     }
 
     func transcribe(_ samples: [Float]) async -> String? {
-        guard let refiner else { return nil }
         var audio = samples
         let minimum = sampleRate * 3 / 2
         if audio.count < minimum {
@@ -294,10 +276,7 @@ private final class StartResult: @unchecked Sendable {
 
 @_cdecl("milo_speech_start")
 public func milo_speech_start(
-    _ chunkMs: UInt32,
-    _ eouDebounceMs: UInt32,
     _ aec: Bool,
-    _ secondPass: Bool,
     _ callback: MiloEventCallback,
     _ cleaned: MiloAudioCallback?,
     _ context: UnsafeMutableRawPointer?,
@@ -308,9 +287,7 @@ public func milo_speech_start(
     let ready = DispatchSemaphore(value: 0)
     Task.detached {
         do {
-            result.value = .success(
-                try await Session.load(
-                    chunkMs: chunkMs, debounceMs: eouDebounceMs, aec: aec, secondPass: secondPass, sink: sink))
+            result.value = .success(try await Session.load(aec: aec, sink: sink))
         } catch {
             result.value = .failure(error)
         }

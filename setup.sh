@@ -3,12 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./setup.sh [--lure]
+Usage: ./setup.sh
 
 Installs what milo needs on an Apple Silicon Mac and builds the milo command.
 Run it again at any time; it skips what is already installed.
 
-  --lure    also install the Lure voice (milo --tts lure)
   --help    show this help
 EOF
 }
@@ -19,10 +18,8 @@ fail() {
   exit 1
 }
 
-lure=0
 for arg in "$@"; do
   case "$arg" in
-    --lure) lure=1 ;;
     -h | --help)
       usage
       exit 0
@@ -41,7 +38,6 @@ fi
 repo=$(cd "$(dirname "$0")" && pwd)
 root="$HOME/.cache/milo"
 venv="$root/venv"
-lure_commit=3f4ae026d0b0278886d1cd6f386960947d591d7b
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
 user_path="$PATH"
 export PATH="$cargo_bin:$HOME/.local/bin:$PATH"
@@ -73,15 +69,6 @@ if [ ! -x "$venv/bin/python" ]; then
   uv venv --python 3.12 "$venv"
 fi
 uv pip install --python "$venv/bin/python" -r "$repo/sidecar/requirements.txt"
-
-if [ "$lure" = 1 ]; then
-  say "Installing Lure in ~/.cache/milo/lure-tts"
-  if [ ! -d "$root/lure-tts" ]; then
-    git clone https://github.com/smirki/lure-tts "$root/lure-tts"
-  fi
-  git -C "$root/lure-tts" checkout --quiet "$lure_commit"
-  (cd "$root/lure-tts" && uv pip install --python "$venv/bin/python" ./backends/mlx ".[server]")
-fi
 
 say "Building and installing milo"
 cargo install --locked --path "$repo/crates/milo"

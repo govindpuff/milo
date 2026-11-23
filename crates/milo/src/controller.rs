@@ -22,6 +22,12 @@ use crate::tools::Look;
 use crate::tts::{Gate, Job};
 
 const HARD_WAIT: Duration = Duration::from_secs(3);
+const HOLD: Duration = Duration::from_millis(80);
+const SPECULATE: Duration = Duration::from_millis(250);
+const MAX_WAIT: Duration = Duration::from_millis(800);
+const SETTLE: Duration = Duration::from_millis(350);
+const PATIENCE: Duration = Duration::from_millis(1500);
+const BARGE_WORDS: usize = 2;
 const TOKEN_SLACK: Duration = Duration::from_millis(1500);
 const LATE_WORDS: Duration = Duration::from_secs(1);
 const REFINE_WAIT: Duration = Duration::from_millis(450);
@@ -127,18 +133,11 @@ pub enum Event {
 }
 
 pub struct Settings {
-    pub hold: Duration,
-    pub speculate: Duration,
-    pub max_wait: Duration,
-    pub settle: Duration,
-    pub patience: Duration,
     pub nudge: Duration,
-    pub wordless: bool,
     pub bank: Arc<Bank>,
     pub backchannel: bool,
     pub yielding: bool,
     pub sounds: &'static [&'static str],
-    pub barge_words: usize,
     pub hands: Option<UnboundedSender<Look>>,
     pub talking: Arc<AtomicBool>,
     pub busy: Arc<AtomicBool>,
@@ -215,7 +214,7 @@ pub struct Controller {
     history: Vec<Message>,
     turn: Option<Turn>,
     heard: Option<Heard>,
-    voice_reset: Option<turn::Reset>,
+    voice_reset: turn::Reset,
     voice_seq: u64,
     verdict: Option<Verdict>,
     refined_seq: Option<u64>,
@@ -247,7 +246,7 @@ impl Controller {
         events: UnboundedSender<Event>,
         settings: Settings,
         history: Vec<Message>,
-        voice_reset: Option<turn::Reset>,
+        voice_reset: turn::Reset,
     ) -> Controller {
         Controller {
             llm,
@@ -306,7 +305,7 @@ impl Controller {
         match &self.turn {
             Some(_) => Instant::now() + POLL,
             None => match &self.heard {
-                Some(h) if !h.words.is_empty() => h.at + self.settings.speculate,
+                Some(h) if !h.words.is_empty() => h.at + SPECULATE,
                 _ if !self.asides.is_empty() => Instant::now() + POLL,
                 _ => self.nudge_at().unwrap_or_else(|| Instant::now() + IDLE),
             },
@@ -321,7 +320,7 @@ impl Controller {
         if self.turn.is_none()
             && let Some(h) = &self.heard
             && !h.words.is_empty()
-            && (h.refined || now >= h.at + self.settings.speculate || self.finished() == Some(true))
+            && (h.refined || now >= h.at + SPECULATE || self.finished() == Some(true))
         {
             let speech_end = h.speech_end_ms.and_then(|ms| self.clock.wall(ms));
             self.start(h.text.clone(), h.words.clone(), speech_end, None);
@@ -503,8 +502,7 @@ impl Controller {
 
     fn maybe_wordless(&mut self) {
         let Some(v) = &self.verdict else { return };
-        if !self.settings.wordless
-            || self.silent_seq != Some(v.seq)
+        if self.silent_seq != Some(v.seq)
             || !WORDLESS_MS.contains(&v.voiced_ms)
             || self.turn.is_some()
             || self.playback.queued_ms() > 0
@@ -546,7 +544,7 @@ impl Controller {
             Some(v) if finished == Some(true) => {
                 let ended = self.heard.as_ref().is_some_and(|h| h.text.trim_end().ends_with(['.', '!', '?']));
                 let sure = ended && v.prob.is_some_and(|p| p >= SURE);
-                let settle = if sure { self.settings.settle.min(FAST_SETTLE) } else { self.settings.settle };
+                let settle = if sure { FAST_SETTLE } else { SETTLE };
                 (now >= (v.speech_end + settle).max(last + TRAIL)).then(|| label(v, "turn"))
             }
             Some(v) if finished == Some(false) => {
@@ -554,17 +552,17 @@ impl Controller {
                 let wait = if dangle {
                     DANGLE_PATIENCE
                 } else if short {
-                    self.settings.patience.min(SHORT_PATIENCE)
+                    SHORT_PATIENCE
                 } else {
-                    self.settings.patience
+                    PATIENCE
                 };
                 let wait = if v.acked { wait + ACK_EXTRA } else { wait };
                 (now >= v.speech_end + wait).then(|| label(v, "patience"))
             }
             _ if dangle => (now >= last + DANGLE_PATIENCE).then(|| "trailed off".into()),
             _ => match t.eou {
-                Some(eou) => (now >= eou + self.settings.hold).then(|| "eou".into()),
-                None => (now >= last + self.settings.max_wait).then(|| "timeout".into()),
+                Some(eou) => (now >= eou + HOLD).then(|| "eou".into()),
+                None => (now >= last + MAX_WAIT).then(|| "timeout".into()),
             },
         }
     }
@@ -682,7 +680,7 @@ impl Controller {
         match &self.turn {
             Some(t) if t.committed => {
                 let fresh = fresh_words(&words, &t.base);
-                let few = fresh.len() < self.settings.barge_words.max(1);
+                let few = fresh.len() < BARGE_WORDS;
                 if fresh.is_empty() || is_backchannel(fresh) || (few && at < t.decided + LATE_WORDS) {
                     return;
                 }
@@ -722,7 +720,7 @@ impl Controller {
         match self.turn.as_mut() {
             Some(t) if t.committed => {
                 let fresh = fresh_words(&words, &t.base);
-                let few = fresh.len() < self.settings.barge_words.max(1);
+                let few = fresh.len() < BARGE_WORDS;
                 if fresh.is_empty() || is_backchannel(fresh) || (few && at < t.decided + LATE_WORDS) {
                     self.speech.rearm(false);
                     return;
@@ -832,9 +830,7 @@ impl Controller {
         let voice_end = self.verdict().map(|v| v.speech_end);
         self.heard = None;
         self.verdict = None;
-        if let Some(reset) = &self.voice_reset {
-            reset.reset();
-        }
+        self.voice_reset.reset();
         self.carry = None;
         let quiet = self.last_react.is_some_and(|(at, _)| at.elapsed() < OPENER_QUIET);
         let Some(t) = self.turn.as_mut() else { return };

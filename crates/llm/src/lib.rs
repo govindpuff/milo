@@ -12,14 +12,6 @@ use bytes::Bytes;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
-pub struct LlmConfig {
-    pub base_url: String,
-    pub model: String,
-    pub max_tokens: u32,
-    pub temperature: f32,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -81,7 +73,7 @@ pub struct Llm {
 }
 
 struct Inner {
-    cfg: LlmConfig,
+    model: String,
     http: reqwest::Client,
     base: String,
 }
@@ -136,7 +128,7 @@ struct PrefillRequest<'a> {
 }
 
 impl Llm {
-    pub fn new(cfg: LlmConfig) -> Llm {
+    pub fn new(base_url: &str, model: &str) -> Llm {
         let http = reqwest::Client::builder()
             .no_proxy()
             .tcp_nodelay(true)
@@ -144,17 +136,17 @@ impl Llm {
             .connect_timeout(Duration::from_secs(2))
             .build()
             .expect("reqwest client");
-        let base = cfg.base_url.trim_end_matches('/').to_string();
-        Llm { inner: Arc::new(Inner { cfg, http, base }) }
+        let base = base_url.trim_end_matches('/').to_string();
+        Llm { inner: Arc::new(Inner { model: model.to_string(), http, base }) }
     }
 
     fn chat_request<'a>(&'a self, messages: &'a [Message], stream: bool, max_tokens: u32) -> ChatRequest<'a> {
         ChatRequest {
-            model: &self.inner.cfg.model,
+            model: &self.inner.model,
             messages,
             stream,
             max_tokens,
-            temperature: self.inner.cfg.temperature,
+            temperature: TEMPERATURE,
             chat_template_kwargs: TemplateKwargs { enable_thinking: false },
         }
     }
@@ -163,7 +155,7 @@ impl Llm {
         &self,
         messages: &[Message],
     ) -> Result<impl Stream<Item = Result<String>> + Send + Unpin + use<>> {
-        let req = self.chat_request(messages, true, self.inner.cfg.max_tokens);
+        let req = self.chat_request(messages, true, REPLY_TOKENS);
         let resp = self
             .inner
             .http
@@ -191,7 +183,7 @@ impl Llm {
 
     pub async fn act(&self, messages: &[Message], tools: &serde_json::Value) -> Result<Reply> {
         let req = ActRequest {
-            model: &self.inner.cfg.model,
+            model: &self.inner.model,
             messages,
             tools,
             tool_choice: "auto",
@@ -290,6 +282,8 @@ impl Llm {
     }
 }
 
+const REPLY_TOKENS: u32 = 90;
+const TEMPERATURE: f32 = 0.7;
 const ACT_TOKENS: u32 = 200;
 const ACT_TIMEOUT: Duration = Duration::from_secs(20);
 
