@@ -58,26 +58,25 @@ enum Kind {
     Command(Vec<String>),
 }
 
-struct Param {
-    name: String,
-    about: String,
-    required: bool,
-}
-
 struct Tool {
     name: String,
-    about: String,
+    description: String,
     can: String,
-    params: Vec<Param>,
+    parameters: Value,
     kind: Kind,
 }
 
-fn tool(name: &str, about: &str, can: &str, params: &[(&str, &str, bool)], kind: Kind) -> Tool {
+fn tool(name: &str, description: &str, can: &str, properties: Value, required: &[&str], kind: Kind) -> Tool {
     Tool {
         name: name.into(),
-        about: about.into(),
+        description: description.into(),
         can: can.into(),
-        params: params.iter().map(|(n, a, r)| Param { name: (*n).into(), about: (*a).into(), required: *r }).collect(),
+        parameters: json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false,
+        }),
         kind,
     }
 }
@@ -95,54 +94,67 @@ impl Tools {
                 "weather",
                 "Get the current weather and the forecast for today and tomorrow in a city.",
                 "check the weather",
-                &[(
-                    "place",
-                    "Full city name, like Boston or San Francisco. Leave out if they did not name a place.",
-                    false,
-                )],
+                json!({
+                    "place": {
+                        "type": "string",
+                        "description": "Full city name, like Boston or San Francisco. Leave out if they did not name a place.",
+                    },
+                }),
+                &[],
                 Kind::Weather,
             ),
             tool(
                 "lookup",
                 "Look up a person, place, thing or topic in an encyclopedia and get a short summary.",
                 "look up a fact about a person, place or thing",
-                &[("topic", "What to look up, as a short name or phrase.", true)],
+                json!({ "topic": { "type": "string", "description": "What to look up, as a short name or phrase." } }),
+                &["topic"],
                 Kind::Lookup,
             ),
             tool(
                 "timer",
                 "Start a countdown timer or a timed reminder. Milo tells the person when it finishes.",
                 "set a timer",
-                &[
-                    ("minutes", "Length in minutes, as a number. Use this or seconds.", false),
-                    ("seconds", "Length in seconds, as a number. Use this or minutes.", false),
-                    ("label", "What the timer or reminder is for, if they said.", false),
-                ],
+                json!({
+                    "minutes": { "type": "number", "description": "Length in minutes. Use this or seconds." },
+                    "seconds": { "type": "number", "description": "Length in seconds. Use this or minutes." },
+                    "label": { "type": "string", "description": "What the timer or reminder is for, if they said." },
+                }),
+                &[],
                 Kind::Timer,
             ),
             tool(
                 "open",
                 "Open an app or a website on the person's computer.",
                 "open an app or a website on their computer",
-                &[("what", "An app name like Spotify, or a web address like youtube.com.", true)],
+                json!({
+                    "what": {
+                        "type": "string",
+                        "description": "An app name like Spotify, or a web address like youtube.com.",
+                    },
+                }),
+                &["what"],
                 Kind::Open,
             ),
             tool(
                 "remember",
                 "Save something to long-term memory: a lasting fact about the person, or anything they ask to remember, note or write down.",
                 "remember things for them, from this call and earlier ones",
-                &[(
-                    "fact",
-                    "One short sentence in the third person, like Their name is Sam. or They need to buy milk.",
-                    true,
-                )],
+                json!({
+                    "fact": {
+                        "type": "string",
+                        "description": "One short sentence in the third person, like Their name is Sam. or They need to buy milk.",
+                    },
+                }),
+                &["fact"],
                 Kind::Remember,
             ),
             tool(
                 "forget",
                 "Remove something from long-term memory when they ask to forget or delete it.",
                 "forget something they asked you to remember",
-                &[("what", "A few words from the memory to remove.", true)],
+                json!({ "what": { "type": "string", "description": "A few words from the memory to remove." } }),
+                &["what"],
                 Kind::Forget,
             ),
         ];
@@ -176,16 +188,9 @@ impl Tools {
             self.list
                 .iter()
                 .map(|t| {
-                    let props: Map<String, Value> =
-                        t.params.iter().map(|p| (p.name.clone(), json!({ "description": p.about }))).collect();
-                    let required: Vec<&str> = t.params.iter().filter(|p| p.required).map(|p| p.name.as_str()).collect();
                     json!({
                         "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.about,
-                            "parameters": { "type": "object", "properties": props, "required": required },
-                        },
+                        "function": { "name": t.name, "description": t.description, "parameters": t.parameters },
                     })
                 })
                 .collect(),
@@ -406,10 +411,10 @@ async fn command(t: &Tool, argv: &[String], args: &Map<String, Value>) -> Result
     let mut filled = Vec::with_capacity(argv.len());
     for part in argv {
         let mut part = part.clone();
-        for p in &t.params {
-            let slot = format!("{{{}}}", p.name);
+        for name in t.parameters["properties"].as_object().into_iter().flat_map(Map::keys) {
+            let slot = format!("{{{name}}}");
             if part.contains(&slot) {
-                let value = text(args, &p.name).ok_or_else(|| anyhow!("they did not say the {}", p.name))?;
+                let value = text(args, name).ok_or_else(|| anyhow!("they did not say the {name}"))?;
                 part = part.replace(&slot, &value);
             }
         }
@@ -435,7 +440,7 @@ fn custom() -> Result<Vec<Tool>> {
     let mut out = Vec::new();
     for entry in parsed.as_array().ok_or_else(|| anyhow!("{} must be a list", path.display()))? {
         let field = |k: &str| entry[k].as_str().map(str::trim).filter(|s| !s.is_empty());
-        let (Some(name), Some(about)) = (field("name"), field("description")) else {
+        let (Some(name), Some(description)) = (field("name"), field("description")) else {
             bail!("every tool needs a name and a description");
         };
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -448,21 +453,20 @@ fn custom() -> Result<Vec<Tool>> {
         if argv.is_empty() {
             bail!("tool {name:?} needs a run list, like [\"shortcuts\", \"run\", \"Lights {{state}}\"]");
         }
-        let params = entry["params"]
-            .as_object()
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| Param {
-                        name: k.clone(),
-                        about: v.as_str().unwrap_or("").to_string(),
-                        required: true,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut can = about.trim_end_matches('.').chars();
+        let parameters = match &entry["parameters"] {
+            Value::Null => json!({ "type": "object", "properties": {} }),
+            schema if schema["type"] == "object" => schema.clone(),
+            _ => bail!("the parameters of tool {name:?} must be a JSON Schema with \"type\": \"object\""),
+        };
+        let mut can = description.trim_end_matches('.').chars();
         let can = can.next().map(|f| f.to_lowercase().chain(can).collect()).unwrap_or_default();
-        out.push(Tool { name: name.into(), about: about.into(), can, params, kind: Kind::Command(argv) });
+        out.push(Tool {
+            name: name.into(),
+            description: description.into(),
+            can,
+            parameters,
+            kind: Kind::Command(argv),
+        });
     }
     Ok(out)
 }
@@ -475,6 +479,7 @@ fn text(args: &Map<String, Value>, key: &str) -> Option<String> {
     let s = match args.get(key)? {
         Value::String(s) => s.trim().to_string(),
         Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
         _ => return None,
     };
     (!s.is_empty() && !matches!(s.to_lowercase().as_str(), "null" | "none" | "unknown")).then_some(s)
