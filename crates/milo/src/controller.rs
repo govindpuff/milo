@@ -42,6 +42,7 @@ const SHORT_PATIENCE: Duration = Duration::from_millis(600);
 const MAX_NUDGES: u32 = 2;
 const SILENCE: &str = "(silence)";
 const RESULT: &str = "(result)";
+const WAITING: &str = "not done yet, waiting for them to approve on their screen:";
 const LOOK_LINES: usize = 7;
 const PROMISE_WORDS: usize = 16;
 const PROMISES: &[&str] = &[
@@ -757,7 +758,12 @@ impl Controller {
             _ => text,
         };
         self.settings.talking.store(true, Relaxed);
-        let prompt = format!("[{}] {text}{}", local_time(), if brief { " ..." } else { "" });
+        let waiting = notch::waiting();
+        let stamp = match waiting.is_empty() {
+            true => local_time(),
+            false => format!("{}; {WAITING} {}", local_time(), waiting.join(" ")),
+        };
+        let prompt = format!("[{stamp}] {text}{}", if brief { " ..." } else { "" });
         let said = self.last_react.and_then(|(at, key)| key.filter(|_| at.elapsed() < REACT_MEMORY));
         let mut messages = self.history.clone();
         messages.push(Message::user(prompt.clone()));

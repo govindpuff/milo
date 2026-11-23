@@ -86,6 +86,13 @@ pub fn spoke(samples: &[f32]) {
     level(1, samples);
 }
 
+pub fn waiting() -> Vec<String> {
+    let shown = SHOWN.lock().unwrap();
+    let mut titles: Vec<String> = shown.iter().filter_map(|key| key.lines().next()).map(str::to_string).collect();
+    titles.sort();
+    titles
+}
+
 pub fn muted() -> bool {
     MUTED.load(Relaxed)
 }
