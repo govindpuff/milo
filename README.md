@@ -8,9 +8,9 @@ things up, set timers, open apps, and remember what you tell it.
 
 ## Requirements
 
-- A Mac with Apple silicon, macOS 14 or later, and 18 GB of memory or more
+- A Mac with Apple silicon, macOS 14 or later, and 32 GB of memory or more
 - Xcode 26, or the Xcode Command Line Tools with Swift 6.2 or later
-- About 10 GB of free disk space for the models
+- About 20 GB of free disk space for the models
 
 ## Get started
 
@@ -32,7 +32,7 @@ things up, set timers, open apps, and remember what you tell it.
     milo
     ```
 
-    The first start downloads about 9 GB of models, which can take several
+    The first start downloads about 18 GB of models, which can take several
     minutes. When macOS asks whether your terminal can use the microphone,
     allow access.
 
@@ -112,10 +112,10 @@ milo --voice-ref RECORDING.wav --voice-text "The exact words in the recording."
 ## Change the model
 
 To use another model, pass any model name that Rapid-MLX can serve. For
-example, the following model needs less memory:
+example, the following model is smaller and runs on a Mac with 18 GB of memory:
 
 ```sh
-milo --model qwen3.5-4b-4bit
+milo --model qwen3.5-9b-4bit
 ```
 
 To use your own OpenAI-compatible server instead of Rapid-MLX, give its base
@@ -132,7 +132,7 @@ doesn't support tool calls, add `--no-tools`.
 
 | Option | Description |
 |---|---|
-| `--model` | The language model. The default is `qwen3.5-9b-4bit`. |
+| `--model` | The language model. The default is `gemma-4-26b-qat-4bit`. |
 | `--llm-url` | The base URL of your own OpenAI-compatible server. |
 | `--port` | The port for the model server. The default is `8000`. |
 | `--system-prompt` | A file with your own system prompt, which replaces the built-in one. |

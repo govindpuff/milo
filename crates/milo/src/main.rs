@@ -142,7 +142,7 @@ const WARMUP_TEXT: &str = "Hello there, I'm ready when you are.";
 struct Args {
     #[arg(
         long,
-        default_value = "qwen3.5-9b-4bit",
+        default_value = "gemma-4-26b-qat-4bit",
         help = "Model to talk with: any name or alias Rapid-MLX can serve, or the model name your --llm-url server expects"
     )]
     model: String,
