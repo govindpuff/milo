@@ -186,7 +186,7 @@ milo --voice-design "A calm British man with a low, slow, thoughtful voice."
 
 The first time that you use a description, milo creates the voice, saves it in
 `~/.cache/milo/voices`, and records its reactions again. The default
-description is of a warm, friendly young American woman.
+description is of a warm, friendly young American man.
 
 To copy a voice with Breeze or Lure, give a WAV recording of 3 to 12 seconds
 and the exact words that it contains:
@@ -208,7 +208,7 @@ To use a Lure preset voice, pass its name to `--voice`—for example:
 milo --tts lure --voice imogen
 ```
 
-The presets are `nora` (the default), `jess`, `wade`, `imogen`, `callum`, and
+The presets are `nora`, `jess`, `wade` (the default), `imogen`, `callum`, and
 `tobi`.
 
 For Phonon, choose a voice from the Phonon voice catalog, or a `.safetensors`

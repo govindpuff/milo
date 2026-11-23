@@ -163,7 +163,7 @@ struct Args {
     tts: String,
     #[arg(
         long,
-        default_value = "A warm, friendly young American woman with a natural, relaxed, conversational voice, like chatting with a close friend on the phone.",
+        default_value = "A warm, friendly young American man with a natural, relaxed, conversational voice, like chatting with a close friend on the phone.",
         help = "Breeze: description of the voice to create when no --voice-ref is given"
     )]
     voice_design: String,
@@ -190,7 +190,7 @@ struct Args {
     tts_port: u16,
     #[arg(
         long,
-        default_value = "nora",
+        default_value = "wade",
         help = "Lure: preset voice when no --voice-ref is given: nora, jess, wade, imogen, callum or tobi"
     )]
     voice: String,
