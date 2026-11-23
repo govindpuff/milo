@@ -69,6 +69,7 @@ enum Kind {
     Remember,
     Forget,
     Computer,
+    Halt,
     Command(Vec<String>),
 }
 
@@ -185,6 +186,14 @@ impl Tools {
                 &["task", "steps"],
                 Kind::Computer,
             ));
+            list.push(tool(
+                "stop",
+                "Stop what is being done on the person's computer right now. Use it when they say to stop, cancel or never mind, or that it is not working, while something is still being done there.",
+                "stop what is being done on their computer",
+                json!({}),
+                &[],
+                Kind::Halt,
+            ));
         }
         match custom() {
             Ok(more) => {
@@ -250,6 +259,7 @@ impl Tools {
             Kind::Remember => remember(&call.args),
             Kind::Forget => forget(&call.args),
             Kind::Computer => self.computer(&call.args).await,
+            Kind::Halt => computer::halt(),
             Kind::Command(argv) => command(t, argv, &call.args).await,
         }
     }
