@@ -491,6 +491,22 @@ FluidAudio downloads the Parakeet and LocalVQE models on first use, and Core ML
 compiles them. Starting the recognizer blocks until the models are loaded and
 warmed up.
 
+### Notch panel
+
+The panel is a SwiftUI view in a borderless, non-activating `NSPanel` above the
+menu bar, built from `swift/MiloNotch` and linked into the binary. AppKit needs
+the main thread, so milo runs the AppKit event loop there and runs everything
+else on a second thread. With `--no-notch`, milo skips the event loop and runs
+on the main thread.
+
+The `notch` crate and the panel exchange JSON messages. milo sends a `status`
+message when its state changes, a `card` message to show a title, a body, and a
+list of actions, and a `dismiss` message to remove a card. The panel sends back
+the card's ID and the ID of the action that you clicked. `notch::ask` shows any
+card and waits for the answer, and `notch::approve` is a card with **Decline**
+and **Approve** actions. The `open` tool and custom tools call it before they
+run a command. Cards wait in a queue, and the panel shows the oldest one.
+
 ### Shutdown
 
 When you press Control+C, the controller stops the current turn. milo then

@@ -52,6 +52,20 @@ To quit, press Control+C.
 - Talk over milo to interrupt it.
 - Pause in the middle of a sentence. milo waits for you to go on.
 
+## Approve actions
+
+milo shows a small panel in the notch at the top of your screen. On a Mac
+without a notch, the panel sits at the top center of the screen. A dot in the
+panel shows whether milo is listening, talking, or working.
+
+Before milo opens an app or a website, or runs one of your own tools, the panel
+shows the exact command. To let it run, click **Approve**. To stop it, click
+**Decline**. If you don't answer within 45 seconds, milo doesn't run the
+command.
+
+To turn off the panel, start milo with `milo --no-notch`. milo then runs
+commands without asking.
+
 ## Memory
 
 milo saves lasting facts that you mention, such as your name or where you live,
@@ -87,7 +101,8 @@ To let milo run your own commands, list them in `~/.config/milo/tools.json`:
 - `run`: the command and its arguments. milo replaces each parameter name in
   braces, such as `{state}`, with its value.
 
-milo runs the command without a shell and stops it after 20 seconds. Whatever
+milo asks for your approval in the notch panel, runs the command without a
+shell, and stops it after 20 seconds. Whatever
 the command prints is the result that milo tells you.
 
 **Caution:** The language model fills in the parameter values. Only add
@@ -140,6 +155,7 @@ doesn't support tool calls, add `--no-tools`.
 | `--tts` | The voice engine: `breeze` (the default), or `phonon`, which is smaller and faster but less natural. |
 | `--tts-port` | The port for the voice. The default is `8881`. |
 | `--no-aec` | Turns off echo cancellation. Use it with headphones. |
+| `--no-notch` | Turns off the panel in the notch. milo then runs commands without asking. |
 | `--no-tools` | Turns off tools and memory. |
 | `--no-backchannel` | Turns off the listening sounds while you talk. |
 | `--nudge-ms` | How long milo waits in silence before it follows up, in milliseconds. The default is `6000`. To turn off follow-ups, set it to `0`. |
