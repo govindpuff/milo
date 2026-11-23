@@ -44,8 +44,24 @@ const SILENCE: &str = "(silence)";
 const RESULT: &str = "(result)";
 const LOOK_LINES: usize = 7;
 const PROMISE_WORDS: usize = 16;
-const PROMISES: &[&str] =
-    &["one sec", "let me", "on it", "give me a sec", "hang tight", "opening", "right away", "i'll "];
+const PROMISES: &[&str] = &[
+    "one sec",
+    "a sec",
+    "one moment",
+    "let me",
+    "on it",
+    "hang tight",
+    "hang on",
+    "hold on",
+    "opening",
+    "checking",
+    "look it up",
+    "look that up",
+    "looking it up",
+    "looking that up",
+    "right away",
+    "i'll ",
+];
 const BACKCHANNELS: &[&str] = &[
     "yeah", "yep", "yup", "uh-huh", "uh", "huh", "mhm", "mm-hmm", "mmhmm", "right", "okay", "ok", "sure", "wow",
     "nice", "cool", "oh", "ah", "ha", "haha", "true", "exactly", "gotcha", "hmm", "hm", "mm", "mhmm", "alright", "yes",

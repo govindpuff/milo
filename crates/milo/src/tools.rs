@@ -19,6 +19,7 @@ const RESULT_CHARS: usize = 700;
 const DONE_KEPT: usize = 4;
 const DONE_CHARS: usize = 90;
 const NOTHING: &str = "nothing was done: the helper did not find anything it could do in what they said. Say it didn't go through, and ask for whatever detail seems to be missing";
+const MISSED: &str = "lookup failed: it found nothing about what they asked";
 const MAX_CALLS: usize = 2;
 const MAX_STEPS: usize = 4;
 const MEMORY_LINES: usize = 60;
@@ -199,6 +200,10 @@ impl Tools {
 
     fn direct(&self, name: &str) -> bool {
         self.list.iter().any(|t| t.name == name && !matches!(t.kind, Kind::Lookup | Kind::Command(_)))
+    }
+
+    fn searches(&self, name: &str) -> bool {
+        self.list.iter().any(|t| t.name == name && matches!(t.kind, Kind::Lookup))
     }
 
     fn quiet(&self, name: &str) -> bool {
@@ -613,6 +618,7 @@ async fn work(
         let mut last: Option<String> = None;
         let mut report: Option<String> = None;
         let mut hushed = true;
+        let mut searched = false;
         for step in 0..MAX_STEPS {
             let waited = Instant::now();
             while talking.load(Relaxed) && waited.elapsed() < YIELD_MAX {
@@ -633,13 +639,24 @@ async fn work(
                 report = match step {
                     0 => look.promised.then(|| NOTHING.to_string()),
                     _ if hushed && !look.promised => None,
-                    _ if said.split_whitespace().count() < 3 || said.eq_ignore_ascii_case("none") => last.clone(),
+                    _ if said.split_whitespace().count() < 3 || said.eq_ignore_ascii_case("none") => {
+                        if searched {
+                            Some(MISSED.to_string())
+                        } else {
+                            last.clone()
+                        }
+                    }
                     _ => Some(clip(said)),
                 };
                 break;
             }
+            let calls: Vec<Call> =
+                reply.calls.into_iter().filter(|c| look.promised || !tools.searches(&c.name)).take(MAX_CALLS).collect();
+            if calls.is_empty() {
+                report = if hushed && !look.promised { None } else { last.clone() };
+                break;
+            }
             busy.store(true, Relaxed);
-            let calls: Vec<Call> = reply.calls.into_iter().take(MAX_CALLS).collect();
             messages.push(Message::called(&calls));
             let mut direct = step == 0 && calls.len() == 1;
             for call in &calls {
@@ -663,6 +680,7 @@ async fn work(
                 tried.push(shown);
                 direct &= ok && tools.direct(&call.name);
                 hushed &= ok && tools.quiet(&call.name);
+                searched |= tools.searches(&call.name);
                 messages.push(Message::tool(&call.id, text));
             }
             if direct || step + 1 == MAX_STEPS {
