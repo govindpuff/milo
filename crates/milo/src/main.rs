@@ -139,6 +139,8 @@ struct Args {
     no_aec: bool,
     #[arg(long, help = "Don't let the voice do things (weather, timers, opening apps, notes, your own commands)")]
     no_tools: bool,
+    #[arg(long, help = "Start with the microphone muted; hold Control+Option+Space to talk")]
+    push_to_talk: bool,
     #[arg(long, help = "Don't show the panel in the notch; actions then run without asking")]
     no_notch: bool,
     #[arg(long, value_name = "FILE", help = "Use the system prompt in FILE instead of the built-in one")]
@@ -322,6 +324,9 @@ fn run(args: Args) -> Result<()> {
     if notch::on() {
         let _rt = rt.enter();
         tokio::spawn(status(talking.clone(), busy.clone()));
+        if args.push_to_talk {
+            notch::mute(true);
+        }
     }
     println!("listening");
     let controller = Controller::new(
