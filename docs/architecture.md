@@ -500,36 +500,72 @@ writes both from what you said. The panel shows the steps as one card, and one
 approval covers the whole plan. The tool exists only when the panel is on.
 
 After you approve, `computer.rs` runs a second agent, the *operator*, with its
-own prompt and the tools `click`, `type`, `press`, `menu`, `open`, and `look`.
+own prompt and the tools `open`, `click`, `type`, `press`, `menu`, `grid`, and
+`look`. The operator works in one app's window, which doesn't have to be in
+front. The `open` tool starts the app or opens the address in the background,
+and makes that app the one that the operator works in.
+
 The loop works as follows:
 
-1. `swift/MiloControl` walks the Accessibility tree of the front window and
-   returns it as lines of text. Each control that can be used gets a number, and
-   static text is listed without one. The walk skips anything outside the
-   window's frame, reads only the visible rows of tables and lists, and stops
-   at 200 controls or 2.5 seconds.
-2. The operator calls one tool. A click performs the control's press action, a
-   click on a row selects it, and a click on a text field focuses it. If the
-   Accessibility action fails, milo brings the app to the front and posts a
-   mouse click at the middle of the control. Typed text goes to the app's
-   process as key events. Key combinations go through the system event stream,
-   so system shortcuts work.
-3. milo waits for the app to settle, reads the window again, and returns the
-   result and the new screen. If a click leaves the screen exactly as it was,
-   milo repeats it as a mouse click, because some apps report success for an
-   Accessibility action that they ignore. If an action still changes nothing,
-   the result says so, and tells the operator to try another way. Only the newest screen stays in the operator's
-   messages, so the prompt doesn't grow with every step.
+1. `swift/MiloControl` walks the Accessibility tree of the window and collects
+   the controls that can be used, with their names and frames. The walk skips
+   anything outside the window's frame, reads only the visible rows of tables
+   and lists, and stops at 150 controls or 2.5 seconds.
+2. It captures the window with ScreenCaptureKit, which returns the whole
+   window even when other windows cover it. It draws a numbered box around
+   each control, and scales the picture to about 0.64 megapixels, which is
+   what Gemma's image processor keeps of any image.
+3. The operator gets the picture in a user message, with a text list of the
+   same numbers and names, and calls one tool.
+4. milo carries out the action, waits for the app to settle, and captures the
+   window again. Only the newest picture stays in the operator's messages.
+
+A click tries the following in order, and stops as soon as the window changes:
+
+1. The control's Accessibility action. A row is selected, and a text field is
+   focused.
+2. A mouse click at the middle of the control, posted to the app's process.
+3. A click through the system event stream. milo brings the app to the front,
+   clicks, moves the pointer back to where it was, and brings back the app
+   that was in front.
+
+milo decides that the window changed when the list of controls differs, or
+when a 24 by 24 grayscale copy of the picture differs by more than a small
+amount. If an action changes nothing, the result says so, and tells the
+operator to try another way.
+
+For something that has no numbered box, the operator calls `grid`. The picture
+then shows the window as 24 named squares. Calling `grid` with a square shows
+that square alone, divided again, and `click` with a square clicks its middle.
+
+Typed text and key presses go to the app's process as key events, so they
+don't reach the app that you're using.
+
+Background input uses private functions from the SkyLight framework, which
+milo loads at run time:
+
+- `SLEventPostToPid` posts an event to one process. Chromium and Electron apps
+  ignore mouse events that arrive through the public `CGEventPostToPid`
+  function. If the function is missing, milo uses the public one.
+- `SLPSPostEventRecordTo` tells an app that its window became the key window
+  or stopped being it, without changing which window is in front. milo sends
+  this to the app before it posts mouse or key events, and reverses it
+  afterward.
+
+The private `_AXUIElementGetWindow` function gives the window ID that
+ScreenCaptureKit needs. Apple can change any of these functions in a macOS
+update.
 
 The loop ends when the operator replies without a tool call. That reply comes
-back the same way as any other tool result. The loop also ends after 30 steps
-or four minutes, when you click **Stop** on the card that shows the last
-action, or when the tool agent calls its `stop` tool because you said to stop. A stopped plan reports nothing.
+back the same way as any other tool result, with the text that was typed. The
+loop also ends after 30 steps or six minutes, when you click **Stop** on the
+card that shows the last action, or when the tool agent calls its `stop` tool
+because you said to stop. A stopped plan reports nothing.
 
 For Chromium and Electron apps, milo sets the `AXEnhancedUserInterface` and
 `AXManualAccessibility` attributes on the app, which makes them build their
-Accessibility tree. macOS grants the Accessibility permission to the terminal
-app that starts milo.
+Accessibility tree. macOS grants the Accessibility and Screen Recording
+permissions to the terminal app that starts milo.
 
 ### Notch panel
 

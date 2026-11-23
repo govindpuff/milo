@@ -91,10 +91,12 @@ commands without asking, and can't use apps for you.
 
 milo can click, type, press keys, and choose menu items in the apps on your
 Mac. For example, you can ask it to write a note, send a message, or search a
-website.
+website. milo works in the app's window in the background, so you can keep
+using your Mac while it works.
 
-1.  In System Settings, go to **Privacy & Security** > **Accessibility**, and
-    turn on access for your terminal app. Then start milo again.
+1.  In System Settings, go to **Privacy & Security**, and turn on access for
+    your terminal app under both **Accessibility** and **Screen Recording**.
+    Then start milo again.
 2.  Ask milo for something that takes a few steps in an app.
 3.  The panel shows the plan as a list of steps. To let milo carry out the
     whole plan, click **Approve**, or press Control+Option+Y. milo doesn't ask
@@ -103,11 +105,16 @@ website.
     click **Stop**, press Control+Option+N, or tell milo to stop.
 
 When milo finishes, it tells you what it did. milo works on one plan at a time,
-and stops a plan that takes longer than four minutes.
+and stops a plan that takes longer than six minutes.
 
-milo reads the names of the buttons, fields, and text in the front window. It
-doesn't look at the pixels, so it can't use apps that draw their own
-controls, such as games.
+milo looks at a picture of the window, and reads the names of its buttons,
+fields, and text. It doesn't move your pointer or bring the window to the
+front. If an app ignores a click that milo sends in the background, milo
+brings the app to the front for a moment, clicks, and then puts your pointer
+and your app back.
+
+A website opens as a new tab in your default browser. milo can't see a window
+that is minimized.
 
 ## Memory
 
@@ -217,9 +224,9 @@ doesn't support tool calls, add `--no-tools`.
   the reason. Run `./setup.sh` again.
 - **The build fails with a Rust version error.** Run `rustup update`, and then
   run `./setup.sh` again.
-- **milo says that Accessibility is turned off.** In System Settings, go to
-  **Privacy & Security** > **Accessibility**, turn on access for your terminal
-  app, and start milo again.
+- **milo says that Accessibility or Screen Recording is turned off.** In System
+  Settings, go to **Privacy & Security**, turn on access for your terminal app
+  under **Accessibility** and **Screen Recording**, and start milo again.
 - **Something else is wrong.** Run `RUST_LOG=debug milo` for more detail. The
   model server and the voice write their own logs to
   `$TMPDIR/milo-rapid-mlx-8000.log` and `$TMPDIR/milo-voice-8881.log`.
