@@ -12,7 +12,7 @@ use crate::controller::Event;
 use crate::react::{Bank, Probe};
 use crate::tts::Job;
 
-const FULL_WORDS: usize = 5;
+pub const FULL_WORDS: usize = 5;
 const MOOD_CHARS: usize = 80;
 const DULL: &[&str] = &[
     "flat",
@@ -219,7 +219,7 @@ fn tone(mood: &str) -> String {
     if kept.is_empty() { EASY.to_string() } else { kept.join(", ") }
 }
 
-fn sentences(text: &str) -> Vec<&str> {
+pub fn sentences(text: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
     let mut chars = text.char_indices().peekable();
@@ -239,10 +239,12 @@ fn ended(text: &str) -> bool {
     text.trim_end().ends_with(['.', '!', '?'])
 }
 
+pub fn words(sentence: &str) -> usize {
+    sentence.split_whitespace().filter(|w| !w.starts_with('(') && w.chars().any(char::is_alphanumeric)).count()
+}
+
 fn whole(sentence: &str) -> bool {
-    ended(sentence)
-        && sentence.split_whitespace().filter(|w| !w.starts_with('(') && w.chars().any(char::is_alphanumeric)).count()
-            >= FULL_WORDS
+    ended(sentence) && words(sentence) >= FULL_WORDS
 }
 
 fn limit<'a>(said: &str, rest: &'a str, cap: usize) -> &'a str {

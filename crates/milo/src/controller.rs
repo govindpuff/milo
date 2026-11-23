@@ -17,7 +17,7 @@ use turn::TurnEvent;
 
 use crate::capture::AudioClock;
 use crate::react::Bank;
-use crate::reply::generate;
+use crate::reply::{FULL_WORDS, generate, sentences, words};
 use crate::tools::Look;
 use crate::tts::{Gate, Job};
 
@@ -368,8 +368,7 @@ impl Controller {
             return;
         }
         t.looked = true;
-        let reply = t.full.to_lowercase();
-        let promised = reply.split_whitespace().count() <= PROMISE_WORDS && PROMISES.iter().any(|p| reply.contains(p));
+        let promised = promised(&t.full);
         let mut lines: Vec<String> = self.history.iter().filter_map(spoken_line).collect();
         let from = lines.len().saturating_sub(LOOK_LINES);
         let _ = hands.send(Look { lines: lines.split_off(from), time: local_time(), promised });
@@ -1089,6 +1088,14 @@ fn fresh_words<'a>(words: &'a [String], base: &[String]) -> &'a [String] {
 
 fn is_backchannel(words: &[String]) -> bool {
     words.len() <= 3 && words.iter().all(|w| BACKCHANNELS.contains(&w.as_str()))
+}
+
+fn promised(reply: &str) -> bool {
+    let reply = reply.to_lowercase();
+    let makes = |s: &str| PROMISES.iter().any(|p| s.contains(p));
+    reply.split_whitespace().count() <= PROMISE_WORDS
+        && makes(&reply)
+        && !sentences(&reply).iter().any(|s| !makes(s) && words(s) >= FULL_WORDS)
 }
 
 fn local_time() -> String {
