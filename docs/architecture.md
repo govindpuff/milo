@@ -357,9 +357,10 @@ sends a one-token chat request instead.
 Rapid-MLX sizes its prompt cache from the memory that is free after the model
 loads, which can be too small to hold one conversation with a large model. When
 the cache is too small, every request reads the whole history again. milo sets
-the cache to one eighth of the Mac's memory through the
-`RAPID_MLX_PREFIX_CACHE_MAX_BYTES` environment variable. If you set that
-variable yourself, milo keeps your value.
+the cache to one fifth of the Mac's memory through two environment variables,
+`RAPID_MLX_PREFIX_CACHE_MAX_BYTES` and `APC_MEMORY_MAX_GB`, because the server
+applies both limits. If you set either variable yourself, milo keeps your
+value. The server still removes cache entries when the Mac runs low on memory.
 
 ## Tools
 

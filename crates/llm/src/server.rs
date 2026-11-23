@@ -17,8 +17,10 @@ const SERVE_FLAGS: &[&str] =
     &["--host", "127.0.0.1", "--disable-disk-caches", "--stream-interval", "1", "--hybrid-cache-entries", "16"];
 
 const CACHE_ENV: &str = "RAPID_MLX_PREFIX_CACHE_MAX_BYTES";
-const CACHE_SHARE: u64 = 8;
+const CACHE_GB_ENV: &str = "APC_MEMORY_MAX_GB";
+const CACHE_SHARE: u64 = 5;
 const MEMORY_FALLBACK: u64 = 16 << 30;
+const GIB: f64 = (1u64 << 30) as f64;
 
 fn memory() -> u64 {
     let mut bytes: u64 = 0;
@@ -72,6 +74,7 @@ pub fn ensure_running(model: &str, port: u16) -> Result<Option<ServerGuard>> {
     let log = File::create(&log_path).with_context(|| format!("create {}", log_path.display()))?;
     let port_arg = port.to_string();
     let ppid = std::process::id().to_string();
+    let budget = memory() / CACHE_SHARE;
     let mut cmd = Command::new(&bin);
     cmd.args(GLOBAL_FLAGS)
         .arg("serve")
@@ -80,7 +83,8 @@ pub fn ensure_running(model: &str, port: u16) -> Result<Option<ServerGuard>> {
         .args(SERVE_FLAGS)
         .args(["--watchdog-ppid", &ppid])
         .env("RAPID_MLX_TELEMETRY", "0")
-        .env(CACHE_ENV, std::env::var(CACHE_ENV).unwrap_or_else(|_| (memory() / CACHE_SHARE).to_string()))
+        .env(CACHE_ENV, std::env::var(CACHE_ENV).unwrap_or_else(|_| budget.to_string()))
+        .env(CACHE_GB_ENV, std::env::var(CACHE_GB_ENV).unwrap_or_else(|_| format!("{:.2}", budget as f64 / GIB)))
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
