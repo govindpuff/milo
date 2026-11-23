@@ -18,6 +18,7 @@ const YIELD_POLL: Duration = Duration::from_millis(20);
 const YIELD_MAX: Duration = Duration::from_secs(4);
 const SCREEN: &str = "\n\nThe screen now:\n";
 const STOP: &str = "stop";
+const TYPED_CHARS: usize = 400;
 pub const BUSY: &str = "something else is still being done on their computer; it has to finish or be stopped first";
 
 const PROMPT: &str = "You operate a person's Mac for them. They approved the plan below, and you carry it out one action at a time.
@@ -171,6 +172,7 @@ async fn drive(
             plan.join("\n")
         )),
     ];
+    let mut typed: Vec<String> = Vec::new();
     for _ in 0..MAX_STEPS {
         let waited = Instant::now();
         while talking.load(Relaxed) && waited.elapsed() < YIELD_MAX {
@@ -179,11 +181,20 @@ async fn drive(
         let reply = llm.act(&messages, &schema).await?;
         let Some(call) = reply.calls.into_iter().next() else {
             let said = reply.text.trim().trim_matches('"').trim();
-            return Ok(if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) });
+            let said = if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) };
+            let wrote: String = typed.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+            if wrote.is_empty() {
+                return Ok(said);
+            }
+            let wrote: String = wrote.chars().take(TYPED_CHARS).collect();
+            return Ok(format!("{said} What you typed: \"{wrote}\""));
         };
         let _ = events.send(Event::Doing(format!("{} {}", call.name, Value::Object(call.args.clone()))));
         messages.push(Message::called(std::slice::from_ref(&call)));
         let (did, result) = step(&call).await;
+        if call.name == "type" && !did.contains("failed") {
+            typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));
+        }
         notch::revise(id, &card(task, &did));
         for m in messages.iter_mut() {
             if let Some(at) = m.content.find(SCREEN) {
