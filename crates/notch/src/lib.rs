@@ -14,6 +14,7 @@ const DECLINE: &str = "decline";
 unsafe extern "C" {
     fn milo_notch_run(reply: extern "C" fn(*const c_char));
     fn milo_notch_post(message: *const c_char);
+    fn milo_notch_level(source: i32, value: f32);
 }
 
 static ON: AtomicBool = AtomicBool::new(false);
@@ -61,6 +62,22 @@ pub fn run(work: impl FnOnce() + Send + 'static) {
 
 pub fn on() -> bool {
     ON.load(Relaxed)
+}
+
+fn level(source: i32, samples: &[f32]) {
+    if !on() || samples.is_empty() {
+        return;
+    }
+    let power = samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
+    unsafe { milo_notch_level(source, power.sqrt()) };
+}
+
+pub fn heard(samples: &[f32]) {
+    level(0, samples);
+}
+
+pub fn spoke(samples: &[f32]) {
+    level(1, samples);
 }
 
 pub fn status(state: &str) {
