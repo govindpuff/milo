@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -19,6 +19,7 @@ unsafe extern "C" {
 
 static ON: AtomicBool = AtomicBool::new(false);
 static MUTED: AtomicBool = AtomicBool::new(false);
+static SHOWN: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static WAITING: LazyLock<Mutex<HashMap<u64, oneshot::Sender<String>>>> = LazyLock::new(Mutex::default);
 
@@ -101,6 +102,10 @@ pub async fn ask(card: Card, wait: Duration) -> Option<String> {
     if !on() {
         return None;
     }
+    let key = format!("{}\n{}", card.title, card.body);
+    if !SHOWN.lock().unwrap().insert(key.clone()) {
+        return None;
+    }
     let id = NEXT.fetch_add(1, Relaxed);
     let (tx, rx) = oneshot::channel();
     WAITING.lock().unwrap().insert(id, tx);
@@ -110,7 +115,9 @@ pub async fn ask(card: Card, wait: Duration) -> Option<String> {
         "type": "card",
         "card": { "id": id, "title": card.title, "body": card.body, "actions": actions },
     }));
-    match tokio::time::timeout(wait, rx).await {
+    let answer = tokio::time::timeout(wait, rx).await;
+    SHOWN.lock().unwrap().remove(&key);
+    match answer {
         Ok(Ok(action)) => Some(action),
         _ => {
             WAITING.lock().unwrap().remove(&id);

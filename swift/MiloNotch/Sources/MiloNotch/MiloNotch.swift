@@ -449,7 +449,7 @@ final class Controller {
         case "status":
             if let state = message.state { model.state = state }
         case "card":
-            if let card = message.card { model.cards.append(card) }
+            if let card = message.card { model.cards.insert(card, at: 0) }
         case "mute":
             mute(message.on ?? false)
         case "dismiss":
