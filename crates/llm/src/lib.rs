@@ -232,6 +232,28 @@ impl Llm {
         Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_string())
     }
 
+    pub async fn write(&self, messages: &[Message]) -> Result<String> {
+        let mut req = self.chat_request(messages, false, WRITE_TOKENS);
+        req.temperature = 0.0;
+        let resp = self
+            .inner
+            .http
+            .post(format!("{}/chat/completions", self.inner.base))
+            .header("X-Rapid-Priority", "background")
+            .timeout(ACT_TIMEOUT)
+            .json(&req)
+            .send()
+            .await
+            .context("text request")?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("text request {status}: {body}");
+        }
+        let body: serde_json::Value = serde_json::from_str(&body).context("text response")?;
+        Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_string())
+    }
+
     pub async fn act(&self, messages: &[Message], tools: &serde_json::Value) -> Result<Reply> {
         let req = ActRequest {
             model: &self.inner.model,
@@ -337,6 +359,7 @@ const REPLY_TOKENS: u32 = 1200;
 const TEMPERATURE: f32 = 0.7;
 const ACT_TOKENS: u32 = 320;
 const SEE_TOKENS: u32 = 140;
+const WRITE_TOKENS: u32 = 500;
 const ACT_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn parse_call(name: &serde_json::Value, args: &serde_json::Value) -> Option<Call> {
