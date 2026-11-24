@@ -49,6 +49,9 @@ To quit, press Control+C.
 - "Set a timer for two minutes."
 - "Open Safari."
 - "Make a new note that says call the dentist."
+- "Pause that video."
+- "Close the YouTube tab."
+- "Write a hello world Python file on my desktop, and open it in VS Code."
 - "Remember that my sister's name is Priya."
 - Talk over milo to interrupt it.
 - Pause in the middle of a sentence. milo waits for you to go on.
@@ -63,13 +66,17 @@ see what milo is doing, hold the pointer over the panel.
 To mute your microphone, hold the pointer over the panel and click the
 microphone button. To unmute, click the button again.
 
-Before milo opens an app or a website, or runs one of your own tools, the panel
-shows the exact command. To let it run, click **Approve**. To stop it, click
+Before milo opens an app or a website, closes a browser tab, writes a file, or
+runs one of your own tools, the panel shows exactly what it is about to do. To let it run, click **Approve**. To stop it, click
 **Decline**. If you don't answer within 45 seconds, milo doesn't run the
 command.
 
 You can keep talking while a command waits. If you ask for something else, the
-panel shows the newest command first, and the older ones wait behind it.
+panel shows the newest command first, and the older ones wait behind it. If you
+correct a plan before you approve it, the new plan replaces the old one.
+
+milo pauses, resumes, and skips a video or music without asking, and it
+switches to a browser tab without asking.
 
 The following keyboard shortcuts work in any app:
 
@@ -109,6 +116,18 @@ website.
 
 When milo finishes, it tells you what it did. milo works on one plan at a time,
 and stops a plan that takes longer than six minutes.
+
+### Quick actions
+
+For some requests, milo doesn't click through a window at all:
+
+- **Video and music.** milo pauses or resumes what is playing in a browser tab
+  through the browser connection. For music in an app, it presses the play
+  key or a track key.
+- **Tabs.** milo closes a tab or switches to it by a word from its title.
+- **Files.** milo writes the text of a file itself, under your home folder,
+  and can open the file in an app. The panel shows the path and the text
+  first. milo doesn't run the file.
 
 ### Websites
 
