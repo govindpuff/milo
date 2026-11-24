@@ -1,5 +1,5 @@
 (() => {
-  const limit = { controls: 150, texts: 90, name: 110, text: 180, value: 80, choices: 8, read: 6000, thin: 3, held: 200 };
+  const limit = { controls: 150, texts: 90, name: 110, text: 180, value: 80, choices: 8, read: 4000, thin: 3, held: 200 };
   const clean = (s, n) => {
     s = String(s || '').replace(/\s+/g, ' ').trim();
     return s.length > n ? s.slice(0, n - 1) + '…' : s;

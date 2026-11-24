@@ -34,6 +34,10 @@ const PEEK: Duration = Duration::from_secs(5);
 const FOLLOWED: Duration = Duration::from_secs(6);
 const WAITED: Duration = Duration::from_secs(1);
 const PAST: usize = 4;
+const BUDGET: usize = 6500;
+const PICTURE: usize = 300;
+const OLD: usize = 300;
+const READ: &str = "the text of the page";
 const RETURNS: usize = 5;
 const LOGGED: usize = 400;
 const TABS: usize = 30;
@@ -42,7 +46,7 @@ const IDLE: &str = "no plan is being carried out right now, so there was nothing
 const HALTED: &str = "stopped what was being done on their computer";
 pub const BUSY: &str = "something else is still being done on their computer; it has to finish or be stopped first";
 
-const PROMPT: &str = "You operate a person's Mac for them. They approved the plan below, and you carry it out one action at a time. You work in one place at a time: a tab in their browser, or the window of an app. You work in the background while they use their computer, so the place never needs to be in front.
+const PROMPT: &str = "You operate a person's Mac for them. They approved the plan below, and you carry it out one action at a time. You work in one place at a time: a tab in their browser, or the window of an app. A browser tab never needs to be in front.
 
 After each action you get a picture of the place and a list of what is in it. Lines in the list that start with a number in square brackets are controls you can use. The other lines are text. Trust the list and the picture over what you expect.
 
@@ -51,9 +55,9 @@ Rules:
 - Numbers change after every action. Only use numbers from the latest list.
 - Do what the plan says and nothing else. Do not add steps of your own.
 - First make sure you are in the right place. The first message lists the apps and the browser tabs that are open, and says which place you are in, if any. When the plan is about something that is already open, like that video, this tab or the page they are on, go to the tab or the app that holds it instead of opening it again. It is usually the place you worked in last, or the one in front. If the place you are in is not where the plan belongs, change place before you do anything else. Never click, type or press keys in a place the plan is not about.
-- open brings up an app by name or a website by address, and makes it the place you work in. A website opens in a browser window of your own, so their tabs stay as they are. To use a website, open its address: do not open the browser by its name, and do not go through a search engine when the plan names the site. When a web address can take you straight to what the plan needs, like a site's search results for some words, open that address instead of clicking through the site.
+- open brings up an app by name or a website by address, and makes it the place you work in. An app comes to the front while you work in it. A website opens in a browser window of your own, so their tabs stay as they are. To use a website, open its address: do not open the browser by its name, and do not go through a search engine when the plan names the site. When a web address can take you straight to what the plan needs, like a site's search results for some words, open that address instead of clicking through the site.
 - click presses a control. Give its number from the list. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
-- type types text, into a control if you give its number, otherwise where the cursor is. Typing into a field replaces what was in it. Typing into a large writing area, like a document or the body of a message, adds to what is there. Set enter to true to press return after the text, which is how a search, an address or a chat message is confirmed. To pick from a pop-up menu that lists its choices, type the choice into it. The result tells you what the control contains afterward.
+- type types text, into a text field or a text area if you give its number, otherwise where the cursor is. Never give the number of a button or a link to type. Typing into a field replaces what was in it. Typing into a large writing area, like a document or the body of a message, adds to what is there. Set enter to true to press return after the text, which is how a search, an address or a chat message is confirmed. To pick from a pop-up menu that lists its choices, type the choice into it. The result tells you what the control contains afterward.
 - press sends keys, like return, escape, tab, down, cmd+n or cmd+f.
 - scroll moves down or up to show more of a page or a window.
 - read gives you all the text of a web page, including what is off screen. Use it when the plan asks for something to be found or read out and the list does not show all of it.
@@ -697,7 +701,16 @@ async fn launch(s: &mut Session, what: &str, web: bool) -> Result<String, String
         }
     }
     s.place = match act(json!({ "op": "start" })).await {
-        Ok(name) if !name.is_empty() => Place::Window,
+        Ok(name) if !name.is_empty() => {
+            let ahead = front().await;
+            if ahead.as_deref() != Some(name.as_str()) {
+                if s.lent.is_none() {
+                    s.lent = ahead;
+                }
+                let _ = act(json!({ "op": "raise" })).await;
+            }
+            Place::Window
+        }
         _ => Place::None,
     };
     let until = Instant::now() + ARRIVE;
@@ -854,7 +867,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
                             .scroll(tab, down)
                             .await
                             .map(|_| format!("scrolled {}", if down { "down" } else { "up" })),
-                        "read" => browser.read(tab).await.map(|all| format!("the text of the page:\n{all}\n")),
+                        "read" => browser.read(tab).await.map(|all| format!("{READ}:\n{all}\n")),
                         "show" => {
                             let shown = browser.show(tab).await;
                             let _ = tools::launch(browser.name(), false).await;
@@ -1002,7 +1015,21 @@ async fn work(
         while talking.load(Relaxed) && waited.elapsed() < YIELD_MAX {
             tokio::time::sleep(YIELD_POLL).await;
         }
-        let reply = llm.act(&messages, &schema).await?;
+        let spent = |messages: &[Message]| {
+            let text: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+            let pictures = messages.iter().filter(|m| m.image.is_some()).count();
+            (text + schema.to_string().len()) / 3 + pictures * PICTURE
+        };
+        if spent(&messages) > BUDGET {
+            messages.iter_mut().for_each(|m| m.image = None);
+        }
+        let reply = match llm.act(&messages, &schema).await {
+            Err(e) if messages.iter().any(|m| m.image.is_some()) && format!("{e:#}").contains("400") => {
+                messages.iter_mut().for_each(|m| m.image = None);
+                llm.act(&messages, &schema).await?
+            }
+            other => other?,
+        };
         let Some(mut call) = reply.calls.into_iter().next().or_else(|| written(&reply.text, &schema)) else {
             let said = reply.text.trim().trim_matches('"').trim();
             let said = if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) };
@@ -1052,6 +1079,11 @@ async fn work(
             }
             index <= 2 || m.role != Role::User
         });
+        for old in messages.iter_mut().filter(|m| m.role == Role::Tool) {
+            if old.content.chars().count() > OLD && !old.content.starts_with(READ) {
+                old.content = old.content.chars().take(OLD).collect::<String>() + "…";
+            }
+        }
         messages.push(Message::called(std::slice::from_ref(&call)));
         messages.push(Message::tool(&call.id, did));
         messages.push(Seen { text: now.text.clone(), image: now.image.clone(), print: Vec::new() }.message(""));

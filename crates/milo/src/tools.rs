@@ -181,7 +181,7 @@ impl Tools {
                     "steps": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "The plan, as one to six short steps in order, like Open Messages. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type. When they ask to see or watch something, make the last step Show it to them.",
+                        "description": "The plan, as one to six short steps in order, like Open Messages. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type.",
                     },
                 }),
                 &["task", "steps"],

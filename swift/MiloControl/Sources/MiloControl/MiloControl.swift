@@ -992,6 +992,12 @@ func write(_ request: [String: Any]) throws -> String {
     var field: AXUIElement?
     if request["number"] is NSNumber {
         let (element, label, box) = try target(request)
+        guard inputs.contains(string(element, kAXRoleAttribute) ?? "") else {
+            throw Failure(
+                text:
+                    "\(label) is not something text can go into. Click the place where the text belongs first, and then type without a number"
+            )
+        }
         if AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) != .success,
             let box
         {
