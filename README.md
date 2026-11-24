@@ -390,10 +390,41 @@ A provider has the following settings, all optional for a built-in provider:
 | `headers` | Extra HTTP headers to send, as an object of names and values. |
 | `limit` | The name of the request field that limits the length of a reply. The default is `max_tokens`. |
 | `options` | Fields to add to every request to this provider. A field set to `null` is left out of the request. |
-| `models` | Settings for one model, by its name: `options` adds fields to the requests for that model, and `"pictures": false` sends that model the lists of what is on screen without the screenshots. |
+| `models` | Settings for one model, by its name: `options` adds fields to the requests for that model, `price` sets what its tokens cost, and `"pictures": false` sends that model the lists of what is on screen without the screenshots. |
 
 For example, the `options` in the example set the reasoning effort and the
 service tier that milo asks OpenAI for.
+
+### See what a session costs
+
+After each reply, milo prints the cost of that turn, the cost of the session so
+far, and the number of tokens:
+
+```text
+cost $0.0121 this turn, $0.1840 this session | 212.4k in (190.1k cached), 3.1k out this session
+```
+
+The numbers come from the token counts that the provider reports for each
+request, and include the requests for notes and pictures.
+
+milo knows the prices of the OpenAI models, for the standard, flex, priority,
+and ultrafast service tiers, as of November 24, 2026. For a model on a
+regional OpenAI address, such as `us.api.openai.com`, it adds the 10% that
+OpenAI charges there. For any other model, milo prints the tokens alone. To
+get a cost for that model, or to change a price, set `price` on the model, in
+US dollars for each million tokens:
+
+```json
+{
+  "providers": {
+    "groq": {
+      "models": {
+        "MODEL_NAME": { "price": { "input": 0.5, "cached": 0.25, "output": 2 } }
+      }
+    }
+  }
+}
+```
 
 ## Options
 

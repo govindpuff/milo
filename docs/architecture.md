@@ -474,6 +474,14 @@ completions, the client reads text from `delta.content` and tool calls from
 thinking and can be canceled. Requests to other providers get 4,000 tokens of
 room on top of the reply limit, for models that reason before they answer.
 
+The client asks for the token counts of each streamed request, with
+`stream_options` on chat completions, and reads them from the last event of
+the stream. When the stream is dropped, it adds the counts to one total for
+the process, and the cost if the model has a price. `config.rs` holds the
+OpenAI prices and the multiplier of each service tier, and a `price` in
+`config.json` replaces them. The controller prints the difference since the
+last turn when a turn ends or is interrupted.
+
 milo uses up to three models: the main model, a model that writes the notes
 about a place, and a model that finds a thing in a picture. The last two
 default to the main model.
