@@ -6,8 +6,8 @@ code. For installation and use, see the [README](../README.md).
 ## Overview
 
 milo is one Rust binary. It runs a pipeline from the microphone to the speakers
-and starts up to two child processes: the Rapid-MLX model server and, for the
-Breeze voice, a Python voice server. The following diagram shows how audio and
+and starts up to two child processes: the Rapid-MLX model server, when the
+model runs on your Mac, and a Python voice server for the Breeze voice. The following diagram shows how audio and
 text move through the pipeline:
 
 ```text
@@ -28,10 +28,10 @@ streaming recognition        Smart Turn, second pass                   |
     +-------------+--------------+                                     |
                   | events                                             |
                   v                                                    |
-             controller <------------- tool agent                      |
+             controller <------------> tools                           |
                   |                                                    |
                   v                                                    |
-             reply task: model server stream, chunker                  |
+             reply task: model stream, chunker, tool calls             |
                   |                                                    |
                   v                                                    |
              voice thread: voice server or Phonon                      |
@@ -46,11 +46,11 @@ The workspace has the following crates:
 
 | Crate | What it does |
 |---|---|
-| `crates/milo` | The `milo` binary. `main.rs` has the command-line options, the system prompt, start-up, and shutdown. `controller.rs` runs the conversation. `reply.rs` streams a reply from the model and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` records and picks reaction clips. `capture.rs` runs the capture thread. `tools.rs` has the tool agent, the tools, and memory. `computer.rs` carries out an approved plan in your apps. `skills.rs` keeps the notes that the operator learns about each app and website. |
+| `crates/milo` | The `milo` binary. `main.rs` has the command-line options, the system prompt, start-up, and shutdown. `controller.rs` runs the conversation. `reply.rs` streams a reply from the model and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` records and picks reaction clips. `capture.rs` runs the capture thread. `tools.rs` has the tools and memory. `computer.rs` has the tools that act in your apps. `skills.rs` keeps the notes that milo learns about each app and website. `config.rs` reads the providers, the models, and the API keys. |
 | `crates/audio` | Microphone and speaker I/O through cpal, lock-free ring buffers, resampling, echo reference alignment, and playback with flush and onset timing. |
 | `crates/speech` | Rust bindings to `swift/MiloSpeech`, a Swift static library that wraps FluidAudio: LocalVQE echo removal, Parakeet EOU streaming recognition, and Parakeet TDT 0.6B v2 for the second pass. Its build script runs `swift build` and links the result. |
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn v3.2) through ONNX Runtime, and the second-pass thread. It downloads both models on first use. |
-| `crates/llm` | The client for the OpenAI-compatible model server, the sentence chunker, and the Rapid-MLX launcher. |
+| `crates/llm` | The client for OpenAI-compatible servers, which streams text and tool calls over chat completions or the OpenAI Responses API, the sentence chunker, and the Rapid-MLX launcher. |
 | `crates/voice` | Starts the Python voice server for Breeze, and streams audio from it. The server script, `sidecar/voice_server.py`, is embedded in the binary. |
 | `crates/notch` | Rust bindings to `swift/MiloNotch`, the panel in the notch. |
 | `crates/control` | Rust bindings to `swift/MiloControl`, a Swift static library that reads the front window through the macOS Accessibility API, and clicks, types, presses keys, and chooses menu items. |
@@ -84,7 +84,8 @@ milo runs the following threads, tasks, and processes:
 - **Voice thread.** Takes synthesis jobs from a channel one at a time, and
   passes the audio to the gate.
 - **Tokio runtime.** Two worker threads run the controller task, one reply task
-  for each turn, the tool agent task, timers, and cache warming requests.
+  for each round of a turn, one task that runs the tool calls of a round,
+  timers, and cache warming requests.
 - **Child processes.** `rapid-mlx serve` and `voice_server.py`, each in its own
   process group.
 
@@ -98,7 +99,8 @@ task, voice progress from the voice thread, and tool results. The controller
 handles each event and then runs `tick`, which checks its timers. While a turn
 exists, it ticks every 5 ms. Otherwise, it sleeps until the next deadline.
 
-A *turn* is one reply. A turn starts as *speculative*: milo generates and
+A *turn* is one reply, with the tool calls that the model makes on the way to
+it. A turn starts as *speculative*: milo generates and
 synthesizes the reply, but the gate holds its audio. When the controller
 determines that you've finished, it *commits* the turn: the held audio plays,
 and your message goes into the history. There's at most one turn at a time.
@@ -306,6 +308,9 @@ Either way, the result is one of the following:
   text whose audio had started playing, if any, followed by an ellipsis. The
   system prompt tells the model what the ellipsis means.
 
+An interrupt also stops the tool calls of the turn. See
+[Tools](#tools).
+
 ## Reactions
 
 `react.rs` holds a bank of 17 short reactions, such as "Mm-hmm.", "Oh no.",
@@ -342,20 +347,25 @@ After a reply ends, if milo detects no voice for `--nudge-ms` (6 seconds), the
 controller commits a turn whose message is `(silence)`, and the model follows
 up the way that a person on a call does. The second wait is three times as
 long. After two follow-ups, milo stays quiet until you speak. Follow-ups wait
-while the tool agent works.
+while a tool runs.
 
 ## History and the prompt cache
 
 The history starts with the system prompt and only grows, so that each request
 starts with the previous one and the server can reuse its prompt cache. When the
-history passes 40 messages after a reply, the controller prepares a shorter
+history passes 80 messages after a reply, the controller prepares a shorter
 history: the system prompt, rebuilt with the current memory, and about the last
-20 messages, starting at one of your messages. The server has to read a
+30 messages, starting at one of your messages. A tool call and its result
+each count as a message. The server has to read a
 shortened history from the start, which takes a few seconds, so the controller
 warms the server's cache with it in the background and keeps using the full
 history until that finishes.
 
-At start, milo warms the cache with the system prompt through Rapid-MLX's
+These steps apply to Rapid-MLX. Other providers keep their own caches, and
+milo sends them no warming requests.
+
+At start, milo warms the cache with the system prompt and the tool definitions
+through Rapid-MLX's
 `/v1/cache/prefill` endpoint. If the server doesn't have that endpoint, milo
 sends a one-token chat request instead.
 
@@ -371,63 +381,66 @@ free instead of a tenth of the GPU memory before it removes entries.
 
 ## Tools
 
-milo uses the same model in two roles, so the voice never waits for a tool:
+One model talks and acts. Every request to the model carries the tool
+definitions, and the model answers with text, with tool calls, or with both.
+The system prompt tells the model to say a few words, such as "one sec", in
+the same reply as its first tool call.
 
-- The *talker* is the normal reply stream. With tools on, its system prompt
-  lists what the tools can do, and tells the model to say that it's on it and
-  never to make up an outcome.
-- The *tool agent* in `tools.rs` calls tools when your message asks for
-  something that a tool does.
+### Rounds
 
-### Tool agent
+A turn runs in *rounds*. Each round is one streamed request:
 
-The controller sends a request to the agent after the reply of a committed turn
-finishes generating. It skips follow-ups, tool results, and turns that were
-only an acknowledgment or a wordless sound. The request has the last seven
-lines of the conversation, ending with your message, and a flag that says
-whether milo's reply promised something, such as "one sec" or "let me check".
-If several requests are waiting, the agent takes only the newest.
+1. The reply task streams the text to the voice thread as usual, and collects
+   the tool calls that arrive on the same stream.
+1. If the round has no tool calls, the turn ends like any other reply.
+1. Otherwise, the controller waits until the turn is committed, adds the
+   model's message and its calls to the history, and starts a task that runs
+   the calls in order.
+1. Each result goes into the history as a tool message. When the last call
+   returns, the controller starts the next round with the same turn.
 
-The agent sends the model its own system prompt and a message with the local
-time, the earlier lines, the memory file, its last four tool calls and their
-results, and your latest message. It then runs up to four steps. In each step,
-it does the following:
+A speculative turn never runs a tool: the controller holds the calls until the
+turn commits, and drops them if you keep talking.
 
-1. Waits, for up to 4 seconds, while the talker's reply is still being
-   generated or synthesized.
-1. Calls the model without streaming, at temperature 0, with the tool
-   definitions and the `X-Rapid-Priority: background` header.
-1. If the model answers with text, stops and uses the text as its report.
-1. Otherwise, runs up to two of the requested tool calls and adds their results
-   to its conversation. It doesn't run a call that repeats an earlier one.
+A turn stops calling tools after 60 rounds. The next round then goes out
+without the tool definitions, so the model can only speak.
 
-The following rules shorten or skip the report:
+If every call of a round is `remember`, and the model also said something in
+that round, the turn ends there, so that milo doesn't speak twice.
 
-- If the first step makes one successful call to `weather`, `timer`, `open`,
-  `remember`, or `forget`, the tool's own result is the report.
-- A result from `remember` alone isn't reported unless milo promised
-  something.
-- If the first step calls no tool and milo promised something, the report says
-  that nothing was done.
+### Your voice stops the work
+
+The task that runs the calls waits before each call while voice activity is
+on, and for 1.2 seconds after it ends, for up to 8 seconds in all. Your first
+sound therefore holds the next action, before any word is recognized.
+
+When your words interrupt the turn, the controller aborts the task. Each call
+that hasn't returned gets a tool message that says that it was stopped and
+might or might not have happened. Your message then goes into the same
+history, so the model sees what it did, what was cut off, and what you said,
+and decides what to do next. During a task, milo also captures the place
+again, because the action that was cut off might have changed it.
+
+### Results
 
 The `weather` tool times out after 8 seconds. The `open` tool and
-the commands from `tools.json` time out after 20 seconds, and so does each
-model call. Tool results are cut to 700 characters.
+the commands from `tools.json` time out after 20 seconds. Tool results are cut
+to 700 characters, except for the results of the tools that act in your apps.
+When a new round starts, every earlier tool result that is longer than 300
+characters is cut to that length, except for the answer of `computer` and the
+newest page text from `read`.
 
-### How results come back
-
-The agent sends its report to the controller as an `Aside` event. When nobody
-is speaking and nothing is playing, the controller commits a turn whose message
-is `(result)` followed by the report, and the talker tells you about it in its
-own words. A finished timer arrives the same way. While the agent works, the
-controller holds follow-ups.
+Some results arrive after their turn: a timer that finishes, or an action that
+waited for your approval in the panel. These go to the controller as an
+`Aside` event. When nobody is speaking and nothing is playing, the controller
+commits a turn whose message is `(result)` followed by the text, and the model
+tells you about it, or goes on with the work that it describes.
 
 ### Memory
 
 Memory is the plain-text file `~/.config/milo/memory.md`, with one `- fact` per
-line. The last 60 lines go into the talker's system prompt, where the prompt
-has `{memory}`, at start and after each history cut. They also go into every
-tool agent request. `remember` adds a line unless the same fact is already
+line. The last 60 lines go into the system prompt, where the prompt
+has `{memory}`, at start and after each history cut. `remember` adds a line unless the same fact is already
 there. `forget` removes every line that contains all the words of its argument
 that are longer than two letters.
 
@@ -436,13 +449,39 @@ that are longer than two letters.
 milo starts the model server, the speech recognizer, and the voice at the same
 time, on separate threads. It then loads the turn detector, opens the audio
 devices, starts the capture thread, builds the reaction bank, starts the voice
-thread, warms the model's cache, and starts the tool agent. When everything is
-ready, it prints `listening`.
+thread, and warms the model's cache. When everything is ready, it prints
+`listening`.
+
+### Providers and models
+
+`config.rs` turns a model name into a client. A name is `PROVIDER/MODEL`. When
+the part before the first slash isn't a provider, the whole name is a model of
+the `local` provider, which is Rapid-MLX. milo has a table of built-in
+providers, each with a base URL, an API, and the environment variable for its
+key. `~/.config/milo/config.json` can change a built-in provider or add one.
+
+milo looks for the API key of a provider in the following order: the `key`
+setting in `config.json`, `~/.config/milo/auth.json`, and the provider's
+environment variable. `milo auth` writes `auth.json` with permissions that let
+only your user account read it.
+
+The client builds each request as JSON and then adds the `options` of the
+provider and of the model, so an option can set or remove any field. For chat
+completions, the client reads text from `delta.content` and tool calls from
+`delta.tool_calls`. For the Responses API, it reads text from
+`response.output_text.delta` events and tool calls from
+`response.output_item.done` events. Requests to Rapid-MLX also turn off
+thinking and can be canceled. Requests to other providers get 4,000 tokens of
+room on top of the reply limit, for models that reason before they answer.
+
+milo uses up to three models: the main model, a model that writes the notes
+about a place, and a model that finds a thing in a picture. The last two
+default to the main model.
 
 ### Rapid-MLX
 
-Unless you pass `--llm-url`, milo sends `GET /v1/models` to `127.0.0.1` on
-`--port` (8000) before it starts a server:
+When one of the models belongs to the `local` provider, milo sends
+`GET /v1/models` to `127.0.0.1` on `--port` (8000) before it starts a server:
 
 - If the answer has a `2xx` status code, milo uses that server as is.
 - If something else answers, milo waits for it to become ready.
@@ -451,8 +490,8 @@ Unless you pass `--llm-url`, milo sends `GET /v1/models` to `127.0.0.1` on
 
 milo starts the server in its own process group, listening only on
 `127.0.0.1`, with telemetry and the version check off. It passes
-`--hybrid-cache-entries 16`, so that the tool agent's cache entries don't push
-out the talker's, and `--watchdog-ppid` with milo's process ID, so that the
+`--hybrid-cache-entries 16`, so that the requests for notes and pictures don't
+push the conversation out of the cache, and `--watchdog-ppid` with milo's process ID, so that the
 server exits if milo stops unexpectedly. The server's output goes to
 `$TMPDIR/milo-rapid-mlx-PORT.log`. milo waits up to 20 minutes for the server
 to answer, which includes the first download of the model.
@@ -494,75 +533,82 @@ FluidAudio downloads the Parakeet and LocalVQE models on first use, and Core ML
 compiles them. Starting the recognizer blocks until the models are loaded and
 warmed up.
 
-### Who decides
+### Which tool
 
-The voice model never says whether something can be done. When you ask for
-anything to be done, it says that it is on it, and the tool agent, which sees
-the tool definitions, decides. If the tool agent has no tool for the request,
-it reports that, and the voice model tells you. If the voice model answered
-some other way and the tool agent acts anyway, the tool agent reports that the
-request is being done after all.
-
-The tool agent uses the most direct tool: `media` for what is playing,
-`close_tab` and `show_tab` for a browser tab, `file` to write text into a file,
-`message` to send a text message,
-`open` for an app or a site, and `computer` only for the rest. `media` pauses
+The tool descriptions tell the model to use the most direct tool: `media` for
+what is playing, `close_tab` and `show_tab` for a browser tab, `file` to write
+text into a file, `message` to send a text message, `open` for an app or a
+site, and `computer` only for the rest. `media` pauses
 every playing `video` and `audio` element in every tab over the browser
 connection and marks them, so that `play` resumes the same ones. When nothing
-in the browser was playing, it posts the system play key. A new `computer`
-plan dismisses the approval card of the plan before it.
+in the browser was playing, it posts the system play key.
 
 `message` runs the `imsg` command. `imsg chats --json` lists your
 conversations, each with its number, the name from Contacts, the address, and
 the service. milo leaves out group conversations, matches the name that the
-tool agent gave against the names, and prefers an iMessage conversation. If no
-name matches, the tool returns the names, so that the tool agent can call it
+model gave against the names, and prefers an iMessage conversation. If no
+name matches, the tool returns the names, so that the model can call it
 again with the right one. After you approve, `imsg send --chat-id` sends the
 text to that conversation.
 
 ### Computer use
 
-The `computer` tool takes a short task name and a list of steps. The tool agent
+The `computer` tool takes a short task name and a list of steps. The model
 writes both from what you said. The panel shows the steps as one card, and one
-approval covers the whole plan. The tool exists only when the panel is on.
+approval covers the whole plan. A new plan dismisses the approval card of the
+plan before it. The tool exists only when the panel is on.
 
-After you approve, `computer.rs` runs a second agent, the *operator*, with its
-own prompt and the tools `open`, `click`, `type`, `press`, `scroll`, `read`,
-`menu`, and `look`. When a browser is connected, the operator also has `tab`
-and `close_tab`. A click names a control by its number in the list, by its
-exact name, or by a description of what the picture shows. The plan has a
-`show` flag, which the tool agent sets when you asked to see the result. milo
-then brings the place to the front after the operator finishes.
+`computer` doesn't act. It starts a *task*: it shows the card with the last
+action and a **Stop** button, connects to the browser, and answers with the
+apps and the tabs that are open and the notes about the place. From then on,
+the model carries out the plan itself with the tools `go`, `click`, `type`,
+`press`, `scroll`, `read`, `menu`, `look`, `tab`, and `close_tab`, one call in
+each round. Without a task, these tools do nothing and say so. A click names a
+control by its number in the list, by its exact name, or by a description of
+what the picture shows.
 
-The operator works in one *place* at a time: a browser tab, or the window of an
-app. Neither has to be in front. milo keeps the place, its own browser window,
-and the last four tasks with their results for as long as it runs, so a plan
+The picture and the list of the place aren't part of the history. milo keeps
+only the newest ones, and adds them to the end of each request: to your
+message when it is the last message, or as a message of their own after a tool
+result. If a server refuses a request that has a picture, milo sends the lists
+alone from then on.
+
+A task ends when a turn ends, which is when the model replies without a tool
+call. milo then removes the card, puts back the app that was in front, and
+writes the notes. If the plan has the `show` flag, which the model sets when
+you asked to see the result, milo brings the place to the front instead. When
+your voice interrupts a turn, the task stays open, and your next message says
+that the work is paused. The model can then go on in the same place without a
+new plan. A task also ends when you click **Stop** on the card, and the model
+is told that you stopped it. A task refuses further actions after 40.
+
+The model works in one *place* at a time: a browser tab, or the window of an
+app. Neither has to be in front. milo keeps the place and its own browser
+window for as long as it runs, so a plan
 can go on where the one before it ended. A plan starts in the place of the plan
 before it if that place still exists. Otherwise it starts nowhere, and the
-operator has to go to a place with `open` or `tab` before any other tool works.
-The first message lists the apps that have windows, marks the one in front and
-the one that milo runs in, and lists the open tabs.
+model has to go to a place with `go` or `tab` before any other tool works.
 
 #### Notes about a place
 
-`skills.rs` keeps notes about each app and website that the operator has
+`skills.rs` keeps notes about each app and website that milo has
 worked in, in `~/.config/milo/skills`. A file is named after the app or the
 host of the site, starts with that name as a heading, and holds up to 12
 notes, one per line.
 
-- **Recording.** The operator records each action with its result, the place
+- **Recording.** milo records each action with its result, the place
   that it ended in, and whether the action failed, changed nothing, or
   repeated an earlier one.
-- **Writing.** When a plan ends, finishes with an error, or is stopped, milo
-  asks the model to rewrite the notes of each place where the plan took two
-  actions or more. The model gets the notes so far, the task, the recorded
-  actions, and how the plan ended. milo skips a place that already has notes
-  when no action there was wasted. The request runs after the result is
-  spoken, at background priority. `milo --task` waits for it before it exits.
-- **Reading.** The operator's first message holds the notes of the place that
-  it starts in, and of up to two places that the task or the steps name. When
-  the operator arrives in another place, milo adds the notes of that place to
-  the first message.
+- **Writing.** When a task ends, milo asks the small model to rewrite the
+  notes of each place where the task took two actions or more. The model gets
+  the notes so far, the task, the recorded actions, and how the task ended.
+  milo skips a place that already has notes when no action there was wasted.
+  The request runs after the result is spoken. `milo --task` waits for it
+  before it exits.
+- **Reading.** The answer of `computer` holds the notes of the place that the
+  task starts in, and of up to two places that the task or the steps name.
+  When the model arrives in another place, milo adds the notes of that place
+  to the result of that action.
 
 #### Browser tabs
 
@@ -588,21 +634,21 @@ describes.
   its center through `Input.dispatchMouseEvent`. Text goes in through
   `Input.insertText` after milo focuses the control and selects what it held,
   and milo reads the control back. A pop-up menu takes its choice as typed
-  text. If a click opens a new tab, the operator moves to that tab.
-- **Websites that the operator opens.** `Target.createTarget` with `newWindow`
-  and `background` makes one window that stays behind your windows. The
-  operator reuses that window for every address.
+  text. If a click opens a new tab, the place moves to that tab.
+- **Websites that milo opens.** `Target.createTarget` with `newWindow`
+  and `background` makes one window that stays behind your windows. milo
+  reuses that window for every address.
 - **Settling.** milo polls the address, the load state, the number of
   elements, the scroll offset, and the length of the text every 300
   milliseconds until two polls match.
 
 #### App windows
 
-milo remembers the window by its ID, so the operator stays in it even if you
-use another window of the same app. `open` brings the app to the front,
+milo remembers the window by its ID, so the model stays in it even if you
+use another window of the same app. `go` brings the app to the front,
 because many apps turn off their menus and stop drawing while they are
-covered. milo puts the app that was in front back when the plan ends, unless
-the operator called `show`.
+covered. milo puts the app that was in front back when the task ends, unless
+the plan has the `show` flag.
 
 Before each request, milo estimates the size of the prompt. If the estimate is
 over 6,500 tokens, milo sends the list without the picture, because the model
@@ -622,21 +668,21 @@ The loop works as follows:
    window even when other windows cover it, and scales the picture to about
    0.64 megapixels, which is what Gemma's image processor keeps of any image.
    Nothing is drawn on the picture.
-3. The operator gets the picture in a user message, with the numbered list,
+3. The model gets the picture in a user message, with the numbered list,
    and calls one tool.
 4. milo carries out the action, waits for the window to settle, and captures
-   it again. Only the newest picture stays in the operator's messages.
+   it again. Only the newest picture goes into the next request.
 
 To wait for the window to settle, milo takes a small capture every 300
 milliseconds until two in a row match and the page reports that it has loaded,
-for up to 3 seconds, or 12 seconds after `open`.
+for up to 3 seconds, or 12 seconds after `go`.
 
 The `click` tool takes the number of a control, or a description of something
 in the picture. For a description, milo asks the model for the bounding box of
 the thing, cuts out the third of the picture around that box, and asks again
 on the closer view. It then asks the app which element is topmost at that
 point, and clicks that element. If the app reports none, milo clicks the
-point. When the operator gives both a number and a description that don't
+point. When the model gives both a number and a description that don't
 match, milo uses the description.
 
 A click tries the following in order, and stops as soon as the window changes:
@@ -651,22 +697,23 @@ A click tries the following in order, and stops as soon as the window changes:
 milo decides that the window changed when the list of controls differs, or
 when a 24 by 24 grayscale copy of the picture differs by more than a small
 amount. If an action changes nothing, the result says so, and tells the
-operator to try another way. If the same action leads to the same window a
-second time, the result says so, and the fourth time milo ends the plan.
+model to try another way. If the same action leads to the same window a
+second time, the result says so, and the fourth time the result tells the
+model to stop and say what got in the way.
 
 The `type` tool replaces what is in a text field and adds to what is in a text
 area. Afterward it reads the control and puts what it contains in the result.
 Typed text and key presses go to the app's process as key events, so they
 don't reach the app that you're using.
 
-The `open` tool handles a web address differently from an app name. For an
+The `go` tool handles a web address differently from an app name. For an
 address, milo uses a browser window of its own. The first time, it sends
 Command+N to the default browser, which brings the browser to the front, and
 then brings back the app that was in front. After that, it puts the address in
 that window's address field and presses Return, which doesn't bring the
 browser forward. For an app name, milo starts the app in the background, and
 brings back the app that was in front if the new app takes its place. When
-`open` fails, the operator has no window to work in.
+`go` fails, the model has no window to work in.
 
 milo never works in a window that belongs to the system, such as a permission
 prompt.
@@ -684,7 +731,7 @@ action opens one and the app makes it the focused window, for example after
 
 Before the helper types into a field by its number, it checks that the cursor
 went into that field. If the cursor stays in another field, nothing is typed,
-and the operator gets an error. Text for a text area goes in at its end.
+and the model gets an error. Text for a text area goes in at its end.
 Outside a text field, for example in Calculator, the helper sends one key at a
 time.
 
@@ -707,18 +754,12 @@ The private `_AXUIElementGetWindow` function gives the window ID that
 ScreenCaptureKit needs. Apple can change any of these functions in a macOS
 update.
 
-The loop ends when the operator replies without a tool call. That reply comes
-back the same way as any other tool result, with the text that was typed. The
-loop also ends after 30 steps or six minutes, when you click **Stop** on the
-card that shows the last action, or when the tool agent calls its `stop` tool
-because you said to stop. A stopped plan reports nothing.
-
 After each action, the result lists the lines that left the window's list and
 the lines that are new in it, or says that most of the window changed and
 gives the window's title.
 
-Each tool takes a `why` argument first, in which the operator writes what the
-window shows and why the action is next. milo logs it and doesn't pass it on.
+Each of these tools takes a `why` argument first, in which the model writes
+what the window shows and why the action is next. milo logs it.
 
 The walk leaves out anything that is less than 3 points wide or high inside
 the window, because Chrome reports an element that its container clips away
@@ -729,9 +770,9 @@ Save and open dialogs run in a separate process, so key events that milo posts
 to the app don't reach them. When typed text doesn't appear in a field, milo
 sets the field's value through Accessibility instead.
 
-The `see` tool of the tool agent captures the same window, and asks the model
-a question about the picture and the list. It runs without approval, and not
-while a plan runs.
+The `see` tool captures the window in front, and adds its picture and its list
+to the next request, so that the model can answer from them. It runs without
+approval. During a task, it shows the place of the task again.
 
 milo saves the picture, the list, and the action of each step of the last
 plan in `$TMPDIR/milo-computer`.
@@ -744,8 +785,8 @@ terminal app that starts milo.
 
 ### Test computer use in a virtual machine
 
-`milo --task` carries out one task without the voice or the panel, prints each
-action, and exits. `scripts/sandbox.sh` runs it in a macOS virtual machine, so
+`milo --task` sends one message to the model without the voice or the panel,
+runs the rounds of tool calls, prints each action, and exits. `scripts/sandbox.sh` runs it in a macOS virtual machine, so
 that a test never touches your desktop. The virtual machine reaches the model
 server on your Mac through an SSH tunnel.
 
@@ -800,15 +841,15 @@ list of actions, and a `dismiss` message to remove a card. The panel sends back
 the card's ID and the ID of the action that you clicked. `notch::ask` shows any
 card and waits for the answer, and `notch::approve` is a card with **Decline**
 and **Approve** actions. The `open` tool and custom tools call it before they
-run a command. The helper doesn't wait for the answer: it starts a task that
-waits for approval, runs the command, and reports the result, and then goes on
-to the next request. A declined or unanswered card reports nothing. The panel
+run a command. A tool that asks for approval doesn't wait for the answer: its
+result says that it asked, and a task waits for approval, runs the command,
+and reports the result as an aside. A declined or unanswered card reports
+nothing. The panel
 shows the newest card first, and a second card for the same command is dropped
 while the first one waits.
 
-While a card waits or a plan runs, the time stamp at the start of each of your
-messages to the talker says so, and the talker knows that the action hasn't
-happened yet.
+While a card waits, or a task is paused because you spoke, the time stamp at
+the start of each of your messages says so.
 
 The panel registers its keyboard shortcuts as Carbon hot keys, which work in
 any app and don't need the Accessibility permission. When the mute state
@@ -837,6 +878,9 @@ milo reads and writes the following files:
 |---|---|
 | `~/.config/milo/memory.md` | Memory, one fact per line. |
 | `~/.config/milo/tools.json` | Custom tools. |
+| `~/.config/milo/config.json` | The models and the providers. |
+| `~/.config/milo/auth.json` | API keys that `milo auth` saved. |
+| `~/.config/milo/skills/` | Notes about each app and website. |
 | `~/.cache/milo/venv/` | The voice server's Python environment, created by `setup.sh`. |
 | `~/.cache/milo/voice_server.py` | The voice server script, written from the binary at each start. |
 | `~/.cache/milo/voices/` | Designed Breeze voices. |
