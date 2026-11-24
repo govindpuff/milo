@@ -596,11 +596,13 @@ After each action, the result lists the lines that left the window's list and
 the lines that are new in it, or says that most of the window changed and
 gives the window's title.
 
-When the operator reports that it's done, milo captures the window once more
-and asks the model whether the picture and the list show what the report
-claims. If the answer is no, the operator gets the reason and continues. If
-the answer is no a second time, the result is that the plan didn't work, with
-that reason.
+Each tool takes a `why` argument first, in which the operator writes what the
+window shows and why the action is next. milo logs it and doesn't pass it on.
+
+The walk leaves out anything that is less than 3 points wide or high inside
+the window, because Chrome reports an element that its container clips away
+with a frame that small. milo makes its own browser window 1120 by 760
+points, so that the picture is close to full size.
 
 Save and open dialogs run in a separate process, so key events that milo posts
 to the app don't reach them. When typed text doesn't appear in a field, milo
