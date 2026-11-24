@@ -96,36 +96,59 @@ using your Mac while it works.
 
 1.  In System Settings, go to **Privacy & Security**, and turn on access for
     your terminal app under both **Accessibility** and **Screen Recording**.
-    Then start milo again.
-2.  Ask milo for something that takes a few steps in an app.
-3.  The panel shows the plan as a list of steps. To let milo carry out the
+2.  In Chrome, go to `chrome://inspect/#remote-debugging`, and turn on
+    **Allow remote debugging for this browser instance**. You do this once.
+3.  Start milo again. Chrome comes to the front and asks whether to allow
+    remote debugging. Click **Allow**. Chrome asks this each time that milo
+    starts.
+4.  Ask milo for something that takes a few steps in an app or on a website.
+5.  The panel shows the plan as a list of steps. To let milo carry out the
     whole plan, click **Approve**, or press Control+Option+Y. milo doesn't ask
     again for each step.
-4.  While milo works, the panel shows the last thing that it did. To stop it,
+6.  While milo works, the panel shows the last thing that it did. To stop it,
     click **Stop**, press Control+Option+N, or tell milo to stop.
 
 When milo finishes, it tells you what it did. milo works on one plan at a time,
 and stops a plan that takes longer than six minutes.
 
-milo looks at a picture of the window, and reads the names of its buttons,
-fields, and text. It doesn't move your pointer or bring the window to the
-front. If an app ignores a click that milo sends in the background, milo
-brings the app to the front for a moment, clicks, and then puts your pointer
-and your app back.
+### Websites
 
-For websites, milo opens a window of its own in your default browser, and
-leaves your tabs alone. The browser comes to the front for about a second when
-milo creates that window, and then your app comes back.
+milo reads a web page and uses its buttons, links, and fields through Chrome's
+remote debugging connection. This also works in Brave, Edge, Arc, Vivaldi, and
+Chromium.
 
-If a permission prompt, a password prompt, or a payment comes up that the plan
-doesn't cover, milo stops and tells you what it asks. milo can't see a window
-that is minimized.
+- milo opens websites in a browser window of its own, behind your other
+  windows, and leaves your tabs as they are.
+- milo can also work in a tab that you already have open. For example, you can
+  ask it to pause the video that is playing, or to close a tab.
+- milo remembers where it worked last. You can ask for one thing, and then
+  for the next thing on the same page.
+- When you ask to see something, milo brings its tab to the front when it
+  finishes. Otherwise, your screen stays as it is.
+
+If remote debugging is off, or you use another browser, milo reads the browser
+window off the screen instead. This is slower and less exact.
+
+### Apps
+
+In an app, milo looks at a picture of the window, and reads the names of its
+buttons, fields, and text. It works in the window in the background, and
+doesn't move your pointer. If an app doesn't respond in the background, milo
+brings the app to the front, and puts your app back when the plan finishes.
+
+milo starts each plan in the place where it worked last, or goes to the app or
+the tab that the plan names. It never works in the terminal window that milo
+runs in unless you ask for that app by name.
+
+If something asks milo to allow, confirm, sign in, pay, delete, or send
+something that the plan doesn't cover, milo stops and tells you what it asks.
+milo can't see a window that is minimized.
 
 In a save or open dialog, milo can type the file name and choose a folder from
 the **Where** menu. It can't go to a folder that the menu doesn't list.
 
-You can also ask milo what is on your screen. It looks at the window that it
-last worked in, or at the window in front, without asking for approval.
+You can also ask milo what is on your screen. It looks at the window or the
+tab in front, without asking for approval.
 
 To run one task without the voice, use `--task`, and give each step of the
 plan with `--step`:
@@ -249,6 +272,9 @@ doesn't support tool calls, add `--no-tools`.
 - **milo says that Accessibility or Screen Recording is turned off.** In System
   Settings, go to **Privacy & Security**, turn on access for your terminal app
   under **Accessibility** and **Screen Recording**, and start milo again.
+- **milo says that no browser allows remote debugging.** In Chrome, go to
+  `chrome://inspect/#remote-debugging`, turn on **Allow remote debugging for
+  this browser instance**, and start milo again.
 - **milo does the wrong thing in an app.** The folder `$TMPDIR/milo-computer`
   has the picture and the list that milo saw at each step of the last plan,
   and the action that led to it.

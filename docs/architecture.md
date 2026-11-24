@@ -54,6 +54,7 @@ The workspace has the following crates:
 | `crates/voice` | Starts the Python voice server for Breeze, and streams audio from it. The server script, `sidecar/voice_server.py`, is embedded in the binary. |
 | `crates/notch` | Rust bindings to `swift/MiloNotch`, the panel in the notch. |
 | `crates/control` | Rust bindings to `swift/MiloControl`, a Swift static library that reads the front window through the macOS Accessibility API, and clicks, types, presses keys, and chooses menu items. |
+| `crates/browser` | The client for the Chrome DevTools Protocol. It connects to a running Chromium browser, lists and closes tabs, reads a page through `page.js`, and sends clicks, text, and keys. |
 | `crates/phonon` | The Phonon voice, which runs in-process through the `ptts` crate. milo uses it with `--tts phonon` and when the voice server can't start. |
 
 The `setup.sh` script installs the tools, creates the voice server's Python
@@ -500,10 +501,58 @@ writes both from what you said. The panel shows the steps as one card, and one
 approval covers the whole plan. The tool exists only when the panel is on.
 
 After you approve, `computer.rs` runs a second agent, the *operator*, with its
-own prompt and the tools `open`, `click`, `type`, `press`, `menu`, and `look`.
-The operator works in one window, which doesn't have to be in front. milo
-remembers that window by its ID, so the operator stays in it even if you use
-another window of the same app.
+own prompt and the tools `open`, `click`, `type`, `press`, `scroll`, `read`,
+`menu`, `look`, and `show`. When a browser is connected, the operator also has
+`tab` and `close_tab`.
+
+The operator works in one *place* at a time: a browser tab, or the window of an
+app. Neither has to be in front. milo keeps the place, its own browser window,
+and the last four tasks with their results for as long as it runs, so a plan
+can go on where the one before it ended. A plan starts in the place of the plan
+before it if that place still exists. Otherwise it starts nowhere, and the
+operator has to go to a place with `open` or `tab` before any other tool works.
+The first message lists the apps that have windows, marks the one in front and
+the one that milo runs in, and lists the open tabs.
+
+#### Browser tabs
+
+`crates/browser` reads `DevToolsActivePort` in the profile folder of Chrome,
+Brave, Edge, Arc, Vivaldi, or Chromium, and opens one WebSocket to the browser.
+Chrome asks you to allow each new connection, so milo connects once at
+start-up and keeps the connection. While Chrome asks, milo brings Chrome to the
+front, and then puts the app that was in front back. If no browser allows
+remote debugging, websites go through the app route that the next section
+describes.
+
+- **Reading.** `page.js` runs in the tab and walks the document, including
+  open shadow roots and frames from the same site. It lists each control that
+  is in the viewport and that a click at its center would reach, with its
+  kind, name, value, and state, and the text between the controls. A video is
+  listed with whether it plays and where it is. The walk takes about 20
+  milliseconds. The picture comes from `Page.captureScreenshot`.
+- **Covered windows.** Chrome treats a tab that another window covers as
+  hidden, and such a page loads only part of its content. milo turns on
+  `Emulation.setFocusEmulationEnabled` for each tab that it uses, which makes
+  the page load and draw as if it were in front.
+- **Acting.** A click scrolls the control into view and sends mouse events to
+  its center through `Input.dispatchMouseEvent`. Text goes in through
+  `Input.insertText` after milo focuses the control and selects what it held,
+  and milo reads the control back. A pop-up menu takes its choice as typed
+  text. If a click opens a new tab, the operator moves to that tab.
+- **Websites that the operator opens.** `Target.createTarget` with `newWindow`
+  and `background` makes one window that stays behind your windows. The
+  operator reuses that window for every address.
+- **Settling.** milo polls the address, the load state, the number of
+  elements, the scroll offset, and the length of the text every 300
+  milliseconds until two polls match.
+
+#### App windows
+
+milo remembers the window by its ID, so the operator stays in it even if you
+use another window of the same app. If an action reports success but the
+window looks the same afterward, milo brings the app to the front and looks
+again, because some apps stop drawing while they are covered. milo puts the
+app that was in front back when the plan ends.
 
 The loop works as follows:
 
