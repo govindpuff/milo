@@ -41,9 +41,12 @@ Rules:
 - open brings up an app by name or a website by address, and makes it the window you work in. Start with open unless the window you need is already the one shown. When a web address can take you straight to what the plan needs, like a site's search results for some words, open that address instead of clicking through the site.
 - click presses a control. Give its number from the list. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
 - type types text, into a control if you give its number, otherwise where the cursor is. Typing into a text field replaces what was in it. Typing into a text area adds to what is there. The result tells you what the control contains afterward.
-- press sends keys to the app, like return, escape, tab, down, pagedown, cmd+n or cmd+f. Press pagedown to see further down a page.
+- press sends keys to the app, like return, escape, tab, down, pagedown, cmd+n or cmd+f. Press pagedown to see further down a page. Typing never presses return for you: after you type a name, an address or a search into a field, press return to confirm it.
+- Type only when the result of your last action or the list shows that the cursor is in the right place. If typed text went into the wrong place, undo it with cmd+z before you go on.
+- In a save or open sheet, keys do not work. Type the file name into the Save As field by its number, and click the Save button. To choose the folder, click the Where pop-up and pick the folder there. If the folder the plan names is not offered, save where the sheet already is, and say in your report which folder the file went to.
 - menu picks from the app's menu bar, like File > New Window. It is the surest way to do something an app has a menu item for.
 - look shows the screen again. Use it when something is still loading.
+- The result of each action says what left the window and what is new in it. Read it to see what your action did. When something you meant to remove is listed as gone, that part is done.
 - If an action fails or the screen did not change the way you expected, try another way.
 - Only work in the app or the site the plan names. If it will not open, stop and say so. Never use a different app in its place.
 - You may close a banner or a pop-up that is in the way. But when something asks for a permission, a password, a payment, or to delete or send something the plan does not cover, do not answer it. Stop and say what it is asking.
@@ -56,6 +59,11 @@ Rules:
 const POINT: &str = "This is a picture of an app window. Give the bounding box of the thing described below as [ymin, xmin, ymax, xmax], normalized to 0-1000. Reply with only the box. If it is not in the picture, reply with only the word none.\n\n";
 const STUCK: usize = 3;
 const LOOPING: &str = " You have done exactly this before and ended up in the same place. Do not do it again. Do something different, or stop and say what got in the way.";
+const CHECK: &str = "Someone operated a Mac app for a person and now reports that the job is finished. Check the report against the picture and the list of the window as it is now. Judge only from what the picture and the list show. Say no when the window does not show what the report claims, when text ended up in the wrong place or was typed more than once, when a file or a message was not saved or sent though the plan needed it, or when a step of the plan was skipped. A report that honestly says the job failed is fine. Answer yes or no as the first word. After no, add one short sentence that says what is wrong.\n\n";
+const UNDONE: &str = "A check of the window says this is not right: ";
+const REDO: &str = "\nPut it right. If you cannot, say plainly that it did not work and why.";
+const FAILED: &str = "It did not work. ";
+const LISTED: usize = 8;
 const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 
@@ -71,6 +79,7 @@ impl Drop for Running {
     }
 }
 
+#[derive(Clone)]
 struct Seen {
     text: String,
     image: Option<String>,
@@ -287,6 +296,69 @@ async fn click(llm: &Llm, call: &Call, before: &Seen) -> (Result<String, String>
     (did, screen().await)
 }
 
+fn brief(did: &str) -> &str {
+    let cut = [". Nothing", ". Gone from", ". New in", ". Most of", " You have done"]
+        .iter()
+        .filter_map(|mark| did.find(mark))
+        .min();
+    &did[..cut.unwrap_or(did.len())]
+}
+
+fn bare(line: &str) -> &str {
+    match line.strip_prefix('[').and_then(|rest| rest.split_once("] ")) {
+        Some((number, rest)) if number.chars().all(|c| c.is_ascii_digit()) => rest,
+        _ => line,
+    }
+}
+
+fn changed(before: &Seen, after: &Seen) -> String {
+    let only = |from: &Seen, other: &Seen| -> Vec<String> {
+        let mut have: HashMap<&str, i32> = HashMap::new();
+        for line in other.text.lines().map(bare) {
+            *have.entry(line).or_default() += 1;
+        }
+        let mut out = Vec::new();
+        for line in from.text.lines().map(bare) {
+            let left = have.entry(line).or_default();
+            *left -= 1;
+            if *left < 0 && !line.trim().is_empty() {
+                out.push(line.to_string());
+            }
+        }
+        out
+    };
+    let gone = only(before, after);
+    let new = only(after, before);
+    if gone.len() + new.len() == 0 {
+        return String::new();
+    }
+    if gone.len() > LISTED || new.len() > LISTED {
+        let title = after.text.lines().find(|line| line.starts_with("Window: ")).unwrap_or_default();
+        return format!(". Most of the window changed. {title}");
+    }
+    let mut out = String::new();
+    if !gone.is_empty() {
+        out.push_str(&format!(". Gone from the window: {}", gone.join("; ")));
+    }
+    if !new.is_empty() {
+        out.push_str(&format!(". New in the window: {}", new.join("; ")));
+    }
+    out
+}
+
+async fn check(llm: &Llm, lead: &str, acted: &[String], said: &str, now: &Seen) -> Option<String> {
+    let image = now.image.as_ref()?;
+    let question = format!(
+        "{CHECK}{lead}\n\nWhat was done:\n{}\n\nThe report: {said}\n\nThe window now, as a list:\n{}",
+        acted.join("\n"),
+        now.text
+    );
+    let answer = llm.see(&question, image).await.ok()?;
+    let answer = answer.trim();
+    let (verdict, rest) = answer.split_once(['.', ',', '\n', ':']).unwrap_or((answer, ""));
+    (verdict.trim().eq_ignore_ascii_case("no") && !rest.trim().is_empty()).then(|| tools::clip(rest.trim()))
+}
+
 async fn step(llm: &Llm, call: &Call, before: &Seen) -> (String, Seen) {
     let text = |key: &str| call.args.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let name = call.name.as_str();
@@ -303,9 +375,16 @@ async fn step(llm: &Llm, call: &Call, before: &Seen) -> (String, Seen) {
             };
             if did.is_err() {
                 let _ = act(json!({ "op": "hold" })).await;
-                did = tools::launch(&what, true).await.map_err(|e| format!("{e:#}"));
+                did = act(json!({ "op": "aim", "what": what, "wait": false })).await;
+            }
+            if did.is_err() {
+                let name = match site {
+                    true => what.clone(),
+                    false => act(json!({ "op": "installed", "what": what })).await.unwrap_or_else(|_| what.clone()),
+                };
+                did = tools::launch(&name, true).await.map_err(|e| format!("{e:#}"));
                 if did.is_ok()
-                    && let Err(e) = act(json!({ "op": "aim", "what": what })).await
+                    && let Err(e) = act(json!({ "op": "aim", "what": name })).await
                 {
                     did = Err(e);
                 }
@@ -337,6 +416,8 @@ async fn step(llm: &Llm, call: &Call, before: &Seen) -> (String, Seen) {
     let mut did = did.unwrap_or_else(|e| format!("{name} failed: {e}"));
     if name != "look" && after.same(before) {
         did = format!("{did}. {SAME}");
+    } else if name != "look" {
+        did.push_str(&changed(before, &after));
     }
     keep(&after, &format!("{name} {} -> {did}", Value::Object(call.args.clone())));
     (did, after)
@@ -378,6 +459,8 @@ async fn drive(
     let first = Seen { text: before.text.clone(), image: before.image.clone(), print: Vec::new() };
     let mut messages = vec![Message::system(PROMPT), first.message(&lead)];
     let mut typed: Vec<String> = Vec::new();
+    let mut acted: Vec<String> = Vec::new();
+    let mut checked = false;
     let mut done: HashMap<String, Vec<String>> = HashMap::new();
     for _ in 0..MAX_STEPS {
         let waited = Instant::now();
@@ -387,7 +470,25 @@ async fn drive(
         let reply = llm.act(&messages, &schema).await?;
         let Some(call) = reply.calls.into_iter().next() else {
             let said = reply.text.trim().trim_matches('"').trim();
-            let said = if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) };
+            let mut said = if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) };
+            if !acted.is_empty() {
+                settle(SETTLE, SETTLED).await;
+                let now = screen().await;
+                keep(&now, &format!("said: {said}"));
+                if let Some(wrong) = check(llm, &lead, &acted, &said, &now).await {
+                    log::info!("check: {wrong}");
+                    if !checked {
+                        checked = true;
+                        messages[1].content.push_str(&format!("\n\n{UNDONE}{wrong}{REDO}"));
+                        messages.retain(|m| m.role != Role::User || m.image.is_none());
+                        messages.push(Message::assistant(said));
+                        messages.push(now.clone().message(""));
+                        before = now;
+                        continue;
+                    }
+                    said = format!("{FAILED}{wrong}");
+                }
+            }
             let wrote: String = typed.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
             if wrote.is_empty() {
                 return Ok(said);
@@ -401,17 +502,18 @@ async fn drive(
         let ended = done.entry(key).or_default();
         let again = ended.iter().filter(|text| **text == now.text).count();
         ended.push(now.text.clone());
-        if again >= STUCK {
+        if again >= STUCK && call.name != "look" {
             bail!("it kept repeating the same step without getting anywhere and was stopped before finishing {task}");
         }
         if again >= 1 {
             did.push_str(LOOPING);
         }
         log::info!("{} {} -> {did}", call.name, Value::Object(call.args.clone()));
+        acted.push(format!("{} {} -> {}", call.name, Value::Object(call.args.clone()), brief(&did)));
         if call.name == "type" && !did.contains("failed") {
             typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));
         }
-        notch::revise(id, &card(task, did.split(". Nothing").next().unwrap_or(&did)));
+        notch::revise(id, &card(task, brief(&did)));
         let mut index = 0;
         messages.retain_mut(|m| {
             index += 1;
