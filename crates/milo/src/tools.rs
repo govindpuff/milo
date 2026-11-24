@@ -23,6 +23,34 @@ const FILE_SHOWN: usize = 900;
 static PLANS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NEWER: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const DONE_KEPT: usize = 4;
+const SCRIPTED: Duration = Duration::from_secs(20);
+const PEOPLE_LISTED: usize = 80;
+const PEOPLE: &str = "tell application \"Messages\"
+    set out to \"\"
+    repeat with a in accounts
+        try
+            set kind to (service type of a) as text
+            set held to id of a
+            set names to name of participants of a
+            set handles to handle of participants of a
+            repeat with i from 1 to count of names
+                set out to out & (item i of names) & tab & (item i of handles) & tab & kind & tab & held & linefeed
+            end repeat
+        end try
+    end repeat
+    return out
+end tell";
+const SEND: &str = "on run argv
+    tell application \"Messages\"
+        set a to account id (item 2 of argv)
+        try
+            set who to participant (item 1 of argv) of a
+        on error
+            set who to first participant of a whose handle is (item 1 of argv)
+        end try
+        send (item 3 of argv) to who
+    end tell
+end run";
 const DONE_CHARS: usize = 90;
 const NOTHING: &str = "nothing was done: the helper has no way to do what they asked. All it can do is: {abilities}. If what they asked is not one of those, tell them plainly that you can't do that. If it is one of those and a detail is missing, ask for the detail";
 const MAX_CALLS: usize = 2;
@@ -40,7 +68,7 @@ Your only job is to notice when the person asks for something one of your tools 
 
 Rules:
 - Milo cannot do anything itself. Nothing ever happens unless you call a tool, no matter what Milo says in the call. You alone decide whether something can be done.
-- Use the most direct tool. media pauses, resumes and skips what is playing. close_tab and show_tab handle a browser tab. file writes text into a file, and opens the file in an app when you name one, so when they want something written, call file alone. open brings up an app or a site. Use computer only for what none of those does.
+- Use the most direct tool. media pauses, resumes and skips what is playing. close_tab and show_tab handle a browser tab. file writes text into a file, and opens the file in an app when you name one, so when they want something written, call file alone. message sends a text message to someone, so when they want someone texted, call message alone. open brings up an app or a site. Use computer only for what none of those does.
 - When they correct or change what they just asked, call the tool once more with the corrected request in full. It replaces the earlier one.
 - Act on the person's latest message. The earlier lines are only there so you can work out what they mean, like which city or which app.
 - Call a tool when they ask for something a tool does, or ask a question a tool answers, like what the weather is. A request can be casual: can you open chrome, check boston, remind me in five.
@@ -77,6 +105,7 @@ enum Kind {
     Forget,
     Computer,
     Halt,
+    Message,
     See,
     Media,
     CloseTab,
@@ -182,7 +211,7 @@ impl Tools {
         if notch::on() {
             list.push(tool(
                 "computer",
-                "Do something on the person's computer by using its apps and its browser for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing, pausing or stopping a song or a video, closing or switching a tab, or reading something off a page. It opens the apps and websites it needs, so do not call open as well. It remembers where it worked last, so it can go on with that video, that tab or that page. If they have not said something the task needs, like what a message should say or who it is for, do not call this: Milo will ask them.",
+                "Do something on the person's computer by using its apps and its browser for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending an email, writing a note, searching a site, changing a setting, playing, pausing or stopping a song or a video, closing or switching a tab, or reading something off a page. It opens the apps and websites it needs, so do not call open as well. It remembers where it worked last, so it can go on with that video, that tab or that page. If they have not said something the task needs, like what an email should say or who it is for, do not call this: Milo will ask them.",
                 "do things in their apps and their browser for them, like clicking a button, typing, playing or pausing a video, closing a tab, filling in a form or reading a page",
                 json!({
                     "task": {
@@ -252,6 +281,17 @@ impl Tools {
                 &["path", "content"],
                 Kind::File,
             ));
+            list.push(tool(
+                "message",
+                "Send a text message to someone through the Messages app, as an iMessage or an SMS. Use it instead of computer whenever they want someone texted or messaged. It finds the person by name among the people they have conversations with. If they have not said who it is for or what it should say, do not call this: Milo will ask them.",
+                "send a text message to someone through Messages",
+                json!({
+                    "to": { "type": "string", "description": "Who it is for, by the name they are saved under, like Priya Shah. When Known about the person says what someone is saved as, use that name." },
+                    "text": { "type": "string", "description": "The exact words of the message, taken from what they said." },
+                }),
+                &["to", "text"],
+                Kind::Message,
+            ));
         }
         match custom() {
             Ok(more) => {
@@ -304,7 +344,10 @@ impl Tools {
         notch::on()
             && self.list.iter().any(|t| {
                 t.name == name
-                    && matches!(t.kind, Kind::Open | Kind::Computer | Kind::CloseTab | Kind::File | Kind::Command(_))
+                    && matches!(
+                        t.kind,
+                        Kind::Open | Kind::Computer | Kind::CloseTab | Kind::File | Kind::Message | Kind::Command(_)
+                    )
             })
     }
 
@@ -335,6 +378,7 @@ impl Tools {
                 Ok(format!("closed the tab {}", clip(&title)))
             }
             Kind::File => file(&call.args).await,
+            Kind::Message => message(&call.args).await,
             Kind::Command(argv) => command(t, argv, &call.args).await,
         }
     }
@@ -557,6 +601,74 @@ async fn file(args: &Map<String, Value>) -> Result<String> {
         }
     }
     Ok(said)
+}
+
+async fn script(source: &str, args: &[&str]) -> Result<String> {
+    let run = tokio::process::Command::new("/usr/bin/osascript").arg("-e").arg(source).args(args).output();
+    let out = tokio::time::timeout(SCRIPTED, run).await.map_err(|_| anyhow!("Messages did not answer in time"))??;
+    if !out.status.success() {
+        bail!("Messages would not do it: {}", clip(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+async fn message(args: &Map<String, Value>) -> Result<String> {
+    let to = text(args, "to").ok_or_else(|| anyhow!("they did not say who it is for; ask them"))?;
+    let words = text(args, "text").ok_or_else(|| anyhow!("they did not say what it should say; ask them"))?;
+    let listed = script(PEOPLE, &[]).await?;
+    let people: Vec<[&str; 4]> = listed
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            Some([parts.next()?.trim(), parts.next()?.trim(), parts.next()?.trim(), parts.next()?.trim()])
+        })
+        .filter(|person| !person[0].is_empty() && !person[1].is_empty())
+        .collect();
+    let wanted = to.to_lowercase();
+    let words_of = |name: &str| -> Vec<String> {
+        name.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let asked = words_of(&to);
+    let exact: Vec<&[&str; 4]> =
+        people.iter().filter(|person| person[0].to_lowercase() == wanted || person[1] == to).collect();
+    let hits = match exact.is_empty() {
+        false => exact,
+        true => people
+            .iter()
+            .filter(|person| {
+                let have = words_of(person[0]);
+                !asked.is_empty() && asked.iter().all(|word| have.contains(word))
+            })
+            .collect(),
+    };
+    let mut names: Vec<&str> = hits.iter().map(|person| person[0]).collect();
+    names.sort();
+    names.dedup();
+    let name = match names.as_slice() {
+        [name] => *name,
+        [] => {
+            let mut all: Vec<&str> =
+                people.iter().map(|person| person[0]).filter(|name| *name != "missing value").collect();
+            all.sort();
+            all.dedup();
+            all.truncate(PEOPLE_LISTED);
+            bail!(
+                "nothing was sent: no one in Messages is saved as {to}. The names there are: {}. If one of them is plainly the person they mean, call message again with that exact name. Otherwise ask them what the person is saved as",
+                all.join("; ")
+            );
+        }
+        many => bail!("nothing was sent: more than one person matches {to}, so ask them which: {}", many.join("; ")),
+    };
+    let mine: Vec<&&[&str; 4]> = hits.iter().filter(|person| person[0] == name).collect();
+    let pick = mine.iter().find(|person| person[2].to_lowercase().contains("imessage")).or(mine.first());
+    let Some(person) = pick else { bail!("nothing was sent: {to} could not be found") };
+    allow(&format!("Message {name}?"), &format!("{words}\n\nTo {} by {}", person[1], person[2])).await?;
+    script(SEND, &[person[1], person[3], &words]).await?;
+    Ok(format!("gave Messages the text \"{}\" to send to {name}", clip(&words)))
 }
 
 async fn open(args: &Map<String, Value>) -> Result<String> {
