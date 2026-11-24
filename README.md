@@ -293,6 +293,15 @@ To use a hosted model that requires an API key, set the key in the
 OPENAI_API_KEY=YOUR_KEY milo --llm-url https://api.openai.com/v1 --model gpt-6.1-terra
 ```
 
+Some hosted models accept tools only through the OpenAI Responses API. To use
+that API, add `--llm-api responses`. To set the reasoning effort and the service
+tier that milo asks for, add `--llm-effort` and `--llm-tier`:
+
+```sh
+OPENAI_API_KEY=YOUR_KEY milo --llm-url https://api.openai.com/v1 --model gpt-6.2-sol \
+  --llm-api responses --llm-effort low --llm-tier priority
+```
+
 With a key, milo sends what you say, the lists of what is on screen, and
 screenshots to that server.
 
@@ -302,6 +311,9 @@ screenshots to that server.
 |---|---|
 | `--model` | The language model. The default is `gemma-4-26b-qat-4bit`. |
 | `--llm-url` | The base URL of your own OpenAI-compatible server. |
+| `--llm-api` | The API of the `--llm-url` server: `chat` or `responses`. The default is `chat`. |
+| `--llm-effort` | The reasoning effort to ask the `--llm-url` server for, such as `low`. |
+| `--llm-tier` | The service tier to ask the `--llm-url` server for, such as `priority`. |
 | `--port` | The port for the model server. The default is `8000`. |
 | `--system-prompt` | A file with your own system prompt, which replaces the built-in one. |
 | `--voice-design` | A description of the voice to create. |
