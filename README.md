@@ -1,7 +1,8 @@
 # milo
 
-milo is a voice assistant that runs entirely on your Mac. You talk, and it talks
-back, like a phone call. It starts preparing an answer before you finish
+milo is a voice assistant for your Mac. You talk, and it talks back, like a
+phone call. By default, every model runs on your Mac. You can also
+[pick a hosted model](#change-the-model). It starts preparing an answer before you finish
 speaking, you can talk over it to interrupt, and it makes small listening
 sounds, such as "mm-hmm," while you talk. It can also check the weather, set
 timers, open apps, use apps for you, and remember what you tell it.
@@ -125,8 +126,13 @@ website.
 6.  While milo works, the panel shows the last thing that it did. To stop it,
     click **Stop**, press Control+Option+N, or tell milo to stop.
 
+You can talk while milo works. When you start to speak, milo holds its next
+action, and then goes by what you said. For example, if milo is writing an
+email and you correct a name, milo changes the name in the same draft. To stop
+the work, say so.
+
 When milo finishes, it tells you what it did. milo works on one plan at a time,
-and stops a plan that takes longer than six minutes.
+and stops a plan after 40 actions.
 
 ### What milo learns
 
@@ -200,8 +206,8 @@ the **Where** menu. It can't go to a folder that the menu doesn't list.
 You can also ask milo what is on your screen. It looks at the window or the
 tab in front, without asking for approval.
 
-To run one task without the voice, use `--task`, and give each step of the
-plan with `--step`:
+To run one task without the voice, use `--task`. To give milo a plan to follow,
+add `--step` for each step:
 
 ```sh
 milo --task "Search YouTube for cats" --step "Open youtube.com" --step "Search for cats"
@@ -269,52 +275,134 @@ milo --voice-ref RECORDING.wav --voice-text "The exact words in the recording."
 
 ## Change the model
 
-To use another model, pass any model name that Rapid-MLX can serve. For
-example, the following model is smaller and runs on a Mac with 18 GB of memory:
+milo uses one language model to talk and to act. You name the model as
+`PROVIDER/MODEL`. The provider is the model server that milo runs on your Mac,
+another server that you run, or a hosted service that you have an API key for.
+
+The model must stream chat completions and support tool calls. If it doesn't
+support tool calls, add `--no-tools`.
+
+### Run a model on your Mac
+
+A name without a provider is a model that Rapid-MLX serves on your Mac. For
+example, the following model is smaller than the default and runs on a Mac
+with 18 GB of memory:
 
 ```sh
 milo --model qwen3.5-9b-4bit
 ```
 
-To use your own OpenAI-compatible server instead of Rapid-MLX, give its base
-URL and the model name that it expects:
+To use a model from Ollama or LM Studio, start the server of that app, and then
+name the model:
 
 ```sh
-milo --llm-url http://127.0.0.1:1234/v1 --model MODEL_NAME
+milo --model ollama/MODEL_NAME
+milo --model lmstudio/MODEL_NAME
 ```
 
-The server must stream chat completions. If it doesn't support tool calls, add
-`--no-tools`.
+### Use a hosted model
 
-To use a hosted model that requires an API key, set the key in the
-`MILO_LLM_KEY` or `OPENAI_API_KEY` environment variable:
+1.  Save your API key for the provider:
 
-```sh
-OPENAI_API_KEY=YOUR_KEY milo --llm-url https://api.openai.com/v1 --model gpt-6.1-terra
+    ```sh
+    milo auth openai
+    ```
+
+    milo asks for the key and saves it in `~/.config/milo/auth.json`, which
+    only your user account can read. To remove the key, run the command again
+    and leave the key empty.
+2.  List the models that the provider offers:
+
+    ```sh
+    milo models openai
+    ```
+
+3.  Start milo with one of them:
+
+    ```sh
+    milo --model openai/MODEL_NAME
+    ```
+
+Instead of saving the key, you can set it in the environment variable of the
+provider.
+
+| Provider | Environment variable |
+|---|---|
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `google` | `GEMINI_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
+| `cerebras` | `CEREBRAS_API_KEY` |
+| `xai` | `XAI_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `together` | `TOGETHER_API_KEY` |
+| `fireworks` | `FIREWORKS_API_KEY` |
+
+To see every provider, its address, and whether it has a key, run
+`milo models`.
+
+With a hosted model, milo sends what you say, the lists of what is on your
+screen, and screenshots to that provider.
+
+### Set the models in a file
+
+To choose the models without an option, create `~/.config/milo/config.json`:
+
+```json
+{
+  "model": "openai/MODEL_NAME",
+  "small_model": "groq/MODEL_NAME",
+  "vision_model": "google/MODEL_NAME",
+  "providers": {
+    "openai": {
+      "models": {
+        "MODEL_NAME": {
+          "options": { "reasoning": { "effort": "low" }, "service_tier": "priority" }
+        }
+      }
+    },
+    "mine": {
+      "url": "http://192.168.1.20:8080/v1",
+      "key": "{env:MY_SERVER_KEY}"
+    }
+  }
+}
 ```
 
-Some hosted models accept tools only through the OpenAI Responses API. To use
-that API, add `--llm-api responses`. To set the reasoning effort and the service
-tier that milo asks for, add `--llm-effort` and `--llm-tier`:
+- `model`: the model that milo talks and acts with.
+- `small_model`: optional. The model that writes the
+  [notes about your apps](#what-milo-learns). The default is `model`.
+- `vision_model`: optional. The model that finds a thing in a picture of the
+  screen when the thing has no number in the list. The default is `model`.
+- `providers`: optional. Settings for a built-in provider, or a provider of
+  your own, such as `mine` in the example. You then name its models as
+  `mine/MODEL_NAME`.
 
-```sh
-OPENAI_API_KEY=YOUR_KEY milo --llm-url https://api.openai.com/v1 --model gpt-6.2-sol \
-  --llm-api responses --llm-effort low --llm-tier priority
-```
+A provider has the following settings, all optional for a built-in provider:
 
-With a key, milo sends what you say, the lists of what is on screen, and
-screenshots to that server.
+| Setting | Description |
+|---|---|
+| `url` | The base URL of an OpenAI-compatible server. Required for a provider of your own. |
+| `api` | The API that the server speaks: `chat` for chat completions, or `responses` for the OpenAI Responses API. The default is `chat`. For `openai`, the default is `responses`. |
+| `key` | The API key. To read it from an environment variable, write `{env:NAME}`. |
+| `headers` | Extra HTTP headers to send, as an object of names and values. |
+| `limit` | The name of the request field that limits the length of a reply. The default is `max_tokens`. |
+| `options` | Fields to add to every request to this provider. A field set to `null` is left out of the request. |
+| `models` | Settings for one model, by its name: `options` adds fields to the requests for that model, and `"pictures": false` sends that model the lists of what is on screen without the screenshots. |
+
+For example, the `options` in the example set the reasoning effort and the
+service tier that milo asks OpenAI for.
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `--model` | The language model. The default is `gemma-4-26b-qat-4bit`. |
-| `--llm-url` | The base URL of your own OpenAI-compatible server. |
-| `--llm-api` | The API of the `--llm-url` server: `chat` or `responses`. The default is `chat`. |
-| `--llm-effort` | The reasoning effort to ask the `--llm-url` server for, such as `low`. |
-| `--llm-tier` | The service tier to ask the `--llm-url` server for, such as `priority`. |
-| `--port` | The port for the model server. The default is `8000`. |
+| `--model` | The language model, as `PROVIDER/MODEL`. The default is the model in `config.json`, or `local/gemma-4-26b-qat-4bit`. |
+| `--small-model` | The model that writes the notes about your apps. The default is `--model`. |
+| `--vision-model` | The model that finds things in pictures of the screen. The default is `--model`. |
+| `--port` | The port for the model server on your Mac. The default is `8000`. |
 | `--system-prompt` | A file with your own system prompt, which replaces the built-in one. |
 | `--voice-design` | A description of the voice to create. |
 | `--voice-ref`, `--voice-text` | A WAV recording of a voice to copy, and its exact transcript. |
@@ -329,7 +417,7 @@ screenshots to that server.
 | `--nudge-ms` | How long milo waits in silence before it follows up, in milliseconds. The default is `6000`. To turn off follow-ups, set it to `0`. |
 | `--input-device`, `--output-device` | The microphone or the speakers, by name. |
 | `--list-devices` | Lists the audio devices and exits. |
-| `--task`, `--step` | Carries out one task in your apps without the voice, and exits. Repeat `--step` for each step of the plan. |
+| `--task`, `--step` | Carries out one task in your apps without the voice, and exits. To give a plan, repeat `--step` for each step. |
 
 ## Troubleshooting
 
