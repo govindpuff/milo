@@ -113,8 +113,23 @@ front. If an app ignores a click that milo sends in the background, milo
 brings the app to the front for a moment, clicks, and then puts your pointer
 and your app back.
 
-A website opens as a new tab in your default browser. milo can't see a window
+For websites, milo opens a window of its own in your default browser, and
+leaves your tabs alone. The browser comes to the front for about a second when
+milo creates that window, and then your app comes back.
+
+If a permission prompt, a password prompt, or a payment comes up that the plan
+doesn't cover, milo stops and tells you what it asks. milo can't see a window
 that is minimized.
+
+To run one task without the voice, use `--task`, and give each step of the
+plan with `--step`:
+
+```sh
+milo --task "Search YouTube for cats" --step "Open youtube.com" --step "Search for cats"
+```
+
+milo prints each action and the result, and then exits. This runs the plan
+without asking for approval.
 
 ## Memory
 
@@ -212,6 +227,7 @@ doesn't support tool calls, add `--no-tools`.
 | `--nudge-ms` | How long milo waits in silence before it follows up, in milliseconds. The default is `6000`. To turn off follow-ups, set it to `0`. |
 | `--input-device`, `--output-device` | The microphone or the speakers, by name. |
 | `--list-devices` | Lists the audio devices and exits. |
+| `--task`, `--step` | Carries out one task in your apps without the voice, and exits. Repeat `--step` for each step of the plan. |
 
 ## Troubleshooting
 

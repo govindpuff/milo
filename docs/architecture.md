@@ -500,25 +500,40 @@ writes both from what you said. The panel shows the steps as one card, and one
 approval covers the whole plan. The tool exists only when the panel is on.
 
 After you approve, `computer.rs` runs a second agent, the *operator*, with its
-own prompt and the tools `open`, `click`, `type`, `press`, `menu`, `grid`, and
-`look`. The operator works in one app's window, which doesn't have to be in
-front. The `open` tool starts the app or opens the address in the background,
-and makes that app the one that the operator works in.
+own prompt and the tools `open`, `click`, `type`, `press`, `menu`, and `look`.
+The operator works in one window, which doesn't have to be in front. milo
+remembers that window by its ID, so the operator stays in it even if you use
+another window of the same app.
 
 The loop works as follows:
 
 1. `swift/MiloControl` walks the Accessibility tree of the window and collects
-   the controls that can be used, with their names and frames. The walk skips
-   anything outside the window's frame, reads only the visible rows of tables
-   and lists, and stops at 150 controls or 2.5 seconds.
+   the controls that can be used, with their names and frames. When the window
+   holds a web page, the walk lists the page first, and then up to 24 controls
+   of the app's own window, without the tabs that aren't selected. The walk
+   skips anything outside the window's frame, skips a control that has the
+   same name as the control that contains it, reads only the visible rows of
+   tables and lists, and stops at 150 controls or 2.5 seconds.
 2. It captures the window with ScreenCaptureKit, which returns the whole
-   window even when other windows cover it. It draws a numbered box around
-   each control, and scales the picture to about 0.64 megapixels, which is
-   what Gemma's image processor keeps of any image.
-3. The operator gets the picture in a user message, with a text list of the
-   same numbers and names, and calls one tool.
-4. milo carries out the action, waits for the app to settle, and captures the
-   window again. Only the newest picture stays in the operator's messages.
+   window even when other windows cover it, and scales the picture to about
+   0.64 megapixels, which is what Gemma's image processor keeps of any image.
+   Nothing is drawn on the picture.
+3. The operator gets the picture in a user message, with the numbered list,
+   and calls one tool.
+4. milo carries out the action, waits for the window to settle, and captures
+   it again. Only the newest picture stays in the operator's messages.
+
+To wait for the window to settle, milo takes a small capture every 300
+milliseconds until two in a row match and the page reports that it has loaded,
+for up to 3 seconds, or 12 seconds after `open`.
+
+The `click` tool takes the number of a control, or a description of something
+in the picture. For a description, milo asks the model for the bounding box of
+the thing, cuts out the third of the picture around that box, and asks again
+on the closer view. It then asks the app which element is topmost at that
+point, and clicks that element. If the app reports none, milo clicks the
+point. When the operator gives both a number and a description that don't
+match, milo uses the description.
 
 A click tries the following in order, and stops as soon as the window changes:
 
@@ -532,14 +547,25 @@ A click tries the following in order, and stops as soon as the window changes:
 milo decides that the window changed when the list of controls differs, or
 when a 24 by 24 grayscale copy of the picture differs by more than a small
 amount. If an action changes nothing, the result says so, and tells the
-operator to try another way.
+operator to try another way. If the same action leads to the same window a
+second time, the result says so, and the fourth time milo ends the plan.
 
-For something that has no numbered box, the operator calls `grid`. The picture
-then shows the window as 24 named squares. Calling `grid` with a square shows
-that square alone, divided again, and `click` with a square clicks its middle.
-
+The `type` tool replaces what is in a text field and adds to what is in a text
+area. Afterward it reads the control and puts what it contains in the result.
 Typed text and key presses go to the app's process as key events, so they
 don't reach the app that you're using.
+
+The `open` tool handles a web address differently from an app name. For an
+address, milo uses a browser window of its own. The first time, it sends
+Command+N to the default browser, which brings the browser to the front, and
+then brings back the app that was in front. After that, it puts the address in
+that window's address field and presses Return, which doesn't bring the
+browser forward. For an app name, milo starts the app in the background, and
+brings back the app that was in front if the new app takes its place. When
+`open` fails, the operator has no window to work in.
+
+milo never works in a window that belongs to the system, such as a permission
+prompt.
 
 Background input uses private functions from the SkyLight framework, which
 milo loads at run time:
@@ -548,9 +574,13 @@ milo loads at run time:
   ignore mouse events that arrive through the public `CGEventPostToPid`
   function. If the function is missing, milo uses the public one.
 - `SLPSPostEventRecordTo` tells an app that its window became the key window
-  or stopped being it, without changing which window is in front. milo sends
-  this to the app before it posts mouse or key events, and reverses it
-  afterward.
+  or stopped being it, without changing which window is in front. Before milo
+  posts mouse or key events, it tells the app in front that its window is no
+  longer the key window, tells the target app that its window is, and sends
+  the two records that make that window the key window inside the app. An app
+  ignores key combinations and turns off menu items without all of these.
+  Afterward, milo reverses the first two.
+- `_SLPSGetFrontProcess` gives the process that is in front.
 
 The private `_AXUIElementGetWindow` function gives the window ID that
 ScreenCaptureKit needs. Apple can change any of these functions in a macOS
@@ -562,10 +592,58 @@ loop also ends after 30 steps or six minutes, when you click **Stop** on the
 card that shows the last action, or when the tool agent calls its `stop` tool
 because you said to stop. A stopped plan reports nothing.
 
+milo saves the picture, the list, and the action of each step of the last
+plan in `$TMPDIR/milo-computer`.
+
 For Chromium and Electron apps, milo sets the `AXEnhancedUserInterface` and
 `AXManualAccessibility` attributes on the app, which makes them build their
-Accessibility tree. macOS grants the Accessibility and Screen Recording
-permissions to the terminal app that starts milo.
+Accessibility tree, and waits up to 3 seconds for the page to appear in it.
+macOS grants the Accessibility and Screen Recording permissions to the
+terminal app that starts milo.
+
+### Test computer use in a virtual machine
+
+`milo --task` carries out one task without the voice or the panel, prints each
+action, and exits. `scripts/sandbox.sh` runs it in a macOS virtual machine, so
+that a test never touches your desktop. The virtual machine reaches the model
+server on your Mac through an SSH tunnel.
+
+To set up the virtual machine once, do the following:
+
+1.  Install [Lume](https://github.com/trycua/cua), and pull an image:
+
+    ```sh
+    brew install lume
+    lume pull macos-sequoia-vanilla:latest milo-sandbox
+    lume set milo-sandbox --memory 8GB --display 2880x1800
+    ```
+
+2.  Start the virtual machine in recovery mode, open **Utilities** >
+    **Terminal**, run `csrutil disable`, and restart it. This lets you grant
+    permissions from a script.
+3.  In the virtual machine, grant Accessibility and Screen Recording to
+    `/Users/lume/milo` and to `com.apple.sshd-session` in
+    `/Library/Application Support/com.apple.TCC/TCC.db`, and allow `sudo`
+    without a password.
+4.  Add your public key in `~/.lume/keys/sandbox.pub` to the virtual machine's
+    `~/.ssh/authorized_keys`.
+5.  Save the following as `~/gui.sh` in the virtual machine. It runs a command
+    in the desktop session:
+
+    ```sh
+    #!/bin/sh
+    exec sudo launchctl asuser 501 sudo -u lume env DYLD_LIBRARY_PATH=/usr/lib/swift HOME=/Users/lume RUST_LOG=info "$@"
+    ```
+
+To run a task, start the model server by starting milo once, and then run the
+following:
+
+```sh
+scripts/sandbox.sh up
+scripts/sandbox.sh push
+scripts/sandbox.sh task "Search YouTube for cats" "Open youtube.com" "Search for cats"
+scripts/sandbox.sh pull /tmp/last-run
+```
 
 ### Notch panel
 
