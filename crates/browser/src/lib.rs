@@ -33,7 +33,7 @@ const MINE: (u32, u32) = (1180, 860);
 const PIECE: f64 = 3.0;
 const SCROLL: f64 = 0.8;
 const NOTE_CHARS: usize = 200;
-const GONE: &str = "that number is not in the latest list";
+pub const GONE: &str = "that number is not in the latest list";
 
 type Waiting = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 

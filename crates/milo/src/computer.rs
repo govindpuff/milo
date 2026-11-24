@@ -29,6 +29,7 @@ const SCREEN: &str = "\n\nThe place you are working in now, as a picture and as 
 const STOP: &str = "stop";
 const TYPED_CHARS: usize = 400;
 const MOVED: f64 = 0.8;
+const SPOT: u8 = 8;
 const ALLOW: Duration = Duration::from_secs(40);
 const ASKED: Duration = Duration::from_millis(1500);
 const PEEK: Duration = Duration::from_secs(5);
@@ -57,7 +58,7 @@ Rules:
 - Do what the plan says and nothing else. Do not add steps of your own.
 - First make sure you are in the right place. The first message lists the apps and the browser tabs that are open, and says which place you are in, if any. When the plan is about something that is already open, like that video, this tab or the page they are on, go to the tab or the app that holds it instead of opening it again. It is usually the place you worked in last, or the one in front. If the place you are in is not where the plan belongs, change place before you do anything else. Never click, type or press keys in a place the plan is not about.
 - open brings up an app by name or a website by address, and makes it the place you work in. An app comes to the front while you work in it. A website opens in a browser window of your own, so their tabs stay as they are. To use a website, open its address: do not open the browser by its name, and do not go through a search engine when the plan names the site. When a web address can take you straight to what the plan needs, like a site's search results for some words, open that address instead of clicking through the site.
-- click presses a control. Give its number from the list. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
+- click presses a control. Give its number from the list. The number in square brackets is where the control is in the list, not what it is called: [5] button \"7\" is control 5, and it is the key 7. To press a control by what it is called, leave the number out and give the exact name as what, like 7 or Multiply. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
 - type types text, into a text field or a text area if you give its number, otherwise where the cursor is. Never give the number of a button or a link to type. Typing into a field replaces what was in it. Typing into a large writing area, like a document or the body of a message, adds to what is there. Set enter to true to press return after the text, which is how a search, an address or a chat message is confirmed. To pick from a pop-up menu that lists its choices, type the choice into it. The result tells you what the control contains afterward.
 - press sends keys, like return, escape, tab, down, cmd+n or cmd+f.
 - scroll moves down or up to show more of a page or a window.
@@ -66,7 +67,7 @@ Rules:
 - In a save or open sheet of an app, keys do not work. Type the file name into the Save As field by its number, and click the Save button. To choose the folder, click the Where pop-up and pick the folder there. If the folder the plan names is not offered, save where the sheet already is, and say in your report which folder the file went to.
 - menu picks from an app's menu bar, like File > New Window. In an app it is the surest way to do something there is a menu item for. A web page has no menu bar.
 - look waits a moment and shows the place again. Use it when something is still loading.
-- show brings the place you are in to the front of their screen. Use it as your last action when they asked to see, watch or be shown something. Otherwise leave their screen as it is.
+- You work behind their other windows. When they asked to see what you did, it is brought to the front for them after you finish, so never try to do that yourself.
 - The result of each action says what left the place and what is new in it. Read it to see what your action did. When something you meant to remove is listed as gone, that part is done.
 - If an action fails or the screen did not change the way you expected, try another way.
 - The first message can hold notes from earlier work in an app or a site. They say what got things done there before, and what did nothing. Carry out each step of the plan the way the notes give for it, and do not try what they say does not work. When the screen shows that a note is wrong, trust the screen.
@@ -82,6 +83,8 @@ Rules:
 const TABBED: &str = "\n- tab moves you to a browser tab that is already open, by its number in the list of tabs. close_tab closes a tab: the one you are in, or another by its number. Keys like cmd+t, cmd+l and cmd+w do not reach the browser, so use open, tab and close_tab instead.";
 
 const POINT: &str = "This is a picture of an app window. Give the bounding box of the thing described below as [ymin, xmin, ymax, xmax], normalized to 0-1000. Reply with only the box. If it is not in the picture, reply with only the word none.\n\n";
+const UNMOVED: &str =
+    ". The list of what is in the place is the same as before, so check the picture to see whether that did anything";
 const STUCK: usize = 3;
 const LOOPING: &str = " You have done exactly this before and ended up in the same place. Do not do it again. Do something different, or stop and say what got in the way.";
 const LISTED: usize = 8;
@@ -167,7 +170,8 @@ impl Seen {
             return true;
         }
         let apart: u64 = self.print.iter().zip(&other.print).map(|(a, b)| a.abs_diff(*b) as u64).sum();
-        (apart as f64 / self.print.len() as f64) < MOVED
+        let most = self.print.iter().zip(&other.print).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        (apart as f64 / self.print.len() as f64) < MOVED && most < SPOT
     }
 
     fn message(self, lead: &str) -> Message {
@@ -253,7 +257,6 @@ fn schema(linked: bool) -> Value {
             &["path"],
         ),
         tool("look", "Wait a moment and show the place again.", json!({}), &[]),
-        tool("show", "Bring the place you are in to the front of their screen.", json!({}), &[]),
     ];
     if linked {
         all.push(tool("tab", "Go to a browser tab that is already open.", json!({ "number": tab }), &["number"]));
@@ -541,6 +544,43 @@ fn line(seen: &Seen, number: u64) -> String {
     seen.text.lines().find_map(|line| line.strip_prefix(&tag)).unwrap_or("it").to_string()
 }
 
+fn stale<T>(got: &Result<T>) -> bool {
+    got.as_ref().is_err_and(|e| format!("{e:#}").contains(browser::GONE))
+}
+
+fn stem(line: &str) -> &str {
+    match line.rfind('"') {
+        Some(at) => &line[..=at],
+        None => line.split(" (").next().unwrap_or(line),
+    }
+}
+
+async fn again(browser: &Browser, tab: &str, before: &Seen, number: u64) -> Option<u64> {
+    let held = line(before, number);
+    let wanted = stem(&held);
+    let now = browser.look(tab).await.ok()?;
+    let mut hits = now.text.lines().filter_map(|line| {
+        let (number, rest) = line.strip_prefix('[')?.split_once("] ")?;
+        (stem(rest) == wanted).then(|| number.parse::<u64>().ok()).flatten()
+    });
+    let first = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
+fn called(seen: &Seen, what: &str) -> Option<u64> {
+    let wanted = what.trim().trim_matches('"').to_lowercase();
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut hits = seen.text.lines().filter_map(|line| {
+        let (number, rest) = line.strip_prefix('[')?.split_once("] ")?;
+        let name = rest.split_once('"')?.1.split_once('"')?.0;
+        (name.to_lowercase() == wanted).then(|| number.parse::<u64>().ok()).flatten()
+    });
+    let first = hits.next()?;
+    hits.next().is_none().then_some(first)
+}
+
 async fn sprung(s: &mut Session, from: &str) -> bool {
     let Some(browser) = &s.browser else { return false };
     let Ok(tabs) = browser.tabs().await else { return false };
@@ -562,6 +602,7 @@ async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Resul
         let found = line(before, *number).to_lowercase();
         what.is_empty() || found.contains(&what.to_lowercase())
     });
+    let number = number.or_else(|| called(before, &what));
     if number.is_none() && !what.is_empty() {
         let Some(image) = &before.image else {
             return (Err("there is no picture to find it in".to_string()), screen(s).await);
@@ -582,7 +623,13 @@ async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Resul
                 false => format!("clicked {hit}"),
             }),
             (None, Some(number)) => {
-                browser.click(&tab, number).await.map(|_| format!("clicked {}", line(before, number)))
+                let mut got = browser.click(&tab, number).await;
+                if stale(&got)
+                    && let Some(moved) = again(browser, &tab, before, number).await
+                {
+                    got = browser.click(&tab, moved).await;
+                }
+                got.map(|_| format!("clicked {}", line(before, number)))
             }
             (None, None) => Err(anyhow!("nothing to click")),
         };
@@ -619,7 +666,7 @@ async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Resul
 }
 
 fn brief(did: &str) -> &str {
-    let cut = [". Nothing", ". Gone from", ". New in", ". Most of", " You have done"]
+    let cut = [". Nothing", ". The list of", ". Gone from", ". New in", ". Most of", " You have done"]
         .iter()
         .filter_map(|mark| did.find(mark))
         .min();
@@ -652,7 +699,7 @@ fn changed(before: &Seen, after: &Seen) -> String {
     let gone = only(before, after);
     let new = only(after, before);
     if gone.len() + new.len() == 0 {
-        return String::new();
+        return UNMOVED.to_string();
     }
     if gone.len() > LISTED || new.len() > LISTED {
         let title = after.text.lines().find(|line| line.starts_with("Window: ") || line.starts_with("Tab: "));
@@ -837,7 +884,14 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
                 (Place::Tab(tab), Some(browser)) => {
                     let into =
                         number.map(|number| line(before, number)).unwrap_or_else(|| "where the cursor is".to_string());
-                    let mut did = browser.write(tab, number, &words).await.map(|held| match held {
+                    let mut wrote = browser.write(tab, number, &words).await;
+                    if stale(&wrote)
+                        && let Some(number) = number
+                        && let Some(moved) = again(browser, tab, before, number).await
+                    {
+                        wrote = browser.write(tab, Some(moved), &words).await;
+                    }
+                    let mut did = wrote.map(|held| match held {
                         Some(held) => format!("typed \"{words}\" into {into}. It now contains \"{held}\""),
                         None => format!("typed \"{words}\" into {into}"),
                     });
@@ -928,13 +982,21 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
     if name == "show" {
         s.lent = None;
     }
-    if !quiet && after.same(before) {
+    let went = name == "type" && did.contains("It now contains");
+    let chosen = name == "click"
+        && whole(&call.args).is_some_and(|number| line(before, number).contains("(selected)"))
+        && after.same(before);
+    if chosen {
+        did = format!("{did}. It was already selected, so nothing changed. Go on with the next thing");
+    }
+    let went = went || chosen;
+    if !quiet && !went && after.same(before) {
         did = format!("{did}. {SAME}");
     } else if !quiet && place == s.place {
         did.push_str(&changed(before, &after));
     }
     keep(&after, &format!("{name} {} -> {did}", Value::Object(call.args.clone())));
-    let wasted = failed || (!quiet && after.same(before));
+    let wasted = failed || (!quiet && !went && after.same(before));
     (did, after, wasted)
 }
 
@@ -980,11 +1042,26 @@ async fn drive(
     task: &str,
     steps: &[String],
     id: u64,
+    show: bool,
 ) -> Result<String> {
     let mut held = SESSION.lock().await;
     let s = &mut *held;
     s.lent = None;
     let out = work(llm, talking, events, task, steps, id, s).await;
+    if show && out.is_ok() {
+        match (&s.place, &s.browser) {
+            (Place::Tab(tab), Some(browser)) => {
+                let _ = browser.show(tab).await;
+                let _ = tools::launch(browser.name(), false).await;
+                s.lent = None;
+            }
+            (Place::Window, _) => {
+                let _ = act(json!({ "op": "raise" })).await;
+                s.lent = None;
+            }
+            _ => {}
+        }
+    }
     if let Some(back) = s.lent.take() {
         let _ = tools::launch(&back, false).await;
     }
@@ -1100,6 +1177,7 @@ async fn work(
             place: place.clone(),
             did: format!("{key} -> {short}"),
             wasted: wasted || again >= 1,
+            acted: !["open", "look", "read", "tab"].contains(&call.name.as_str()),
         });
         if call.name == "type" && !did.contains("failed") {
             typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));
@@ -1140,7 +1218,7 @@ pub async fn solo(llm: &Llm, task: &str, steps: &[String]) -> Result<String> {
     tokio::spawn(async move { while seen.recv().await.is_some() {} });
     let talking = AtomicBool::new(false);
     let plan = if steps.is_empty() { vec![task.to_string()] } else { steps.to_vec() };
-    let out = match tokio::time::timeout(TOTAL, drive(llm, &talking, &events, task, &plan, 0)).await {
+    let out = match tokio::time::timeout(TOTAL, drive(llm, &talking, &events, task, &plan, 0, false)).await {
         Ok(out) => out,
         Err(_) => Err(anyhow!("it took too long and was stopped before finishing {task}")),
     };
@@ -1149,7 +1227,7 @@ pub async fn solo(llm: &Llm, task: &str, steps: &[String]) -> Result<String> {
         Err(e) => format!("{e:#}"),
     };
     let trail = std::mem::take(&mut SESSION.lock().await.trail);
-    skills::learn(llm.clone(), task.to_string(), trail, ended).await;
+    skills::learn(llm.clone(), task.to_string(), trail, ended, out.is_ok()).await;
     out
 }
 
@@ -1296,10 +1374,11 @@ pub async fn run(
     events: &UnboundedSender<Event>,
     task: &str,
     steps: &[String],
+    show: bool,
 ) -> Result<Option<String>> {
     let (id, stopped) = notch::show(&card(task, "Starting"));
     let out = tokio::select! {
-        out = tokio::time::timeout(TOTAL, drive(llm, talking, events, task, steps, id)) => match out {
+        out = tokio::time::timeout(TOTAL, drive(llm, talking, events, task, steps, id, show)) => match out {
             Ok(out) => out.map(Some),
             Err(_) => Err(anyhow!("it took too long and was stopped before finishing {task}")),
         },
@@ -1313,6 +1392,6 @@ pub async fn run(
         Err(e) => format!("{e:#}"),
     };
     let trail = std::mem::take(&mut SESSION.lock().await.trail);
-    tokio::spawn(skills::learn(llm.clone(), task.to_string(), trail, ended));
+    tokio::spawn(skills::learn(llm.clone(), task.to_string(), trail, ended, matches!(out, Ok(Some(_)))));
     out
 }

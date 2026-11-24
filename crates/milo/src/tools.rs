@@ -223,6 +223,10 @@ impl Tools {
                         "items": { "type": "string" },
                         "description": "The plan, as one to six short steps in order, like Open Messages. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type.",
                     },
+                    "show": {
+                        "type": "boolean",
+                        "description": "True only when they asked to see, watch or be shown it, like play a video or pull up a page. Then it is brought to the front of their screen when the plan is done. Leave it out when they just want something done.",
+                    },
                 }),
                 &["task", "steps"],
                 Kind::Computer,
@@ -475,6 +479,7 @@ impl Tools {
 
     async fn computer(&self, args: &Map<String, Value>) -> Result<String> {
         let task = text(args, "task").ok_or_else(|| anyhow!("they did not say what to do"))?;
+        let show = args.get("show").is_some_and(|show| show == &json!(true) || show == &json!("true"));
         let mut steps: Vec<String> = match args.get("steps") {
             Some(Value::Array(list)) => list.iter().filter_map(Value::as_str).map(str::to_string).collect(),
             Some(Value::String(lines)) => lines.lines().map(str::to_string).collect(),
@@ -509,7 +514,7 @@ impl Tools {
             }
         }
         let _claim = computer::claim()?;
-        match computer::run(&self.llm, &self.talking, &self.events, &task, &steps).await? {
+        match computer::run(&self.llm, &self.talking, &self.events, &task, &steps, show).await? {
             Some(said) => Ok(said),
             None => Err(Skipped.into()),
         }
