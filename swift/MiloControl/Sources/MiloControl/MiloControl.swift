@@ -33,6 +33,7 @@ enum Limit {
     static let glance: CGFloat = 320
     static let sought = 1500
     static let around = 24
+    static let spared = 40
     static let read: UInt32 = 200_000
 }
 
@@ -232,13 +233,32 @@ func aim(_ request: [String: Any]) throws -> String {
             restore(hit.processIdentifier)
             return "working in \(hit.localizedName ?? what)"
         }
-        if Date() > until {
+        if Date() > until || request["wait"] as? Bool == false {
             aimed = nil
             pinned = nil
             throw Failure(text: "\(what) is not open")
         }
         usleep(200_000)
     }
+}
+
+func installed(_ request: [String: Any]) throws -> String {
+    let name = (request["what"] as? String ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+    guard !name.isEmpty else { throw Failure(text: "give the app's name") }
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    var names: [String] = []
+    for folder in ["/Applications", "/System/Applications", "/System/Applications/Utilities", "\(home)/Applications"] {
+        for file in (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [] where file.hasSuffix(".app") {
+            names.append(String(file.dropLast(4)))
+        }
+    }
+    let words = { (text: String) in Set(text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })) }
+    let wanted = words(name)
+    let hit = names.first { $0.lowercased() == name }
+        ?? names.filter { wanted.isSubset(of: words($0)) }.min { $0.count < $1.count }
+        ?? names.filter { $0.lowercased().contains(name) }.min { $0.count < $1.count }
+    guard let hit else { throw Failure(text: "there is no app called \(name) on this Mac") }
+    return hit
 }
 
 func window(_ app: AXUIElement) -> AXUIElement? {
@@ -272,6 +292,9 @@ struct Walk {
     var skip: AXUIElement?
     var around = false
     var hidden = 0
+    var plain = 0
+    var most = Limit.controls
+    var holder = ""
     var last = ""
     let bounds: CGRect?
     let until: Date
@@ -321,7 +344,7 @@ func children(_ node: AXUIElement, _ role: String) -> [AXUIElement] {
 func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ walk: inout Walk) {
     if depth > Limit.depth { return }
     walk.visited += 1
-    if walk.visited > Limit.visited || marked.count >= Limit.controls || Date() > walk.until {
+    if walk.visited > Limit.visited || marked.count >= walk.most || Date() > walk.until {
         walk.cut = true
         return
     }
@@ -329,6 +352,7 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ 
     let role = kind(node)
     if role == "AXMenuBar" { return }
     var above = above
+    var inside: String?
     if let bounds = walk.bounds, let box = frame(node), box.width > 0, box.height > 0, !box.intersects(bounds) {
         return
     }
@@ -347,20 +371,23 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ 
             name = tidy(parts.joined(separator: " · "), Limit.name)
         }
         if name.isEmpty { name = tidy(string(node, kAXHelpAttribute), Limit.name) }
-        let label = "\(words[role] ?? "control")\(name.isEmpty ? "" : " \"\(name)\"")"
+        var label = "\(words[role] ?? "control")\(name.isEmpty ? "" : " \"\(name)\"")"
+        let bare = label
+        if !walk.holder.isEmpty && label != walk.holder && role == "AXButton" { label += " of \(walk.holder)" }
         let chosen = (attribute(node, kAXSelectedAttribute) as? Bool) == true
-        let on = ((attribute(node, kAXValueAttribute) as? NSNumber)?.intValue ?? 0) != 0
-        let spare = walk.around && (role == "AXTab" || role == "AXRadioButton") && !chosen && !on
-        let full = walk.around && walk.lines.count >= Limit.around && !inputs.contains(role)
-        if spare || full { walk.hidden += 1 }
-        if label == above || spare || full {
+        let tab = role == "AXTab" || role == "AXRadioButton"
+        if walk.around && !tab && !inputs.contains(role) { walk.plain += 1 }
+        let full = walk.around && !tab && !inputs.contains(role) && walk.plain > Limit.around
+        if full { walk.hidden += 1 }
+        if bare == above || full {
             hush = true
         } else if !name.isEmpty || inputs.contains(role) {
-            above = label
+            above = bare
+            if role == "AXTab" || role == "AXRadioButton" || rows.contains(role) { inside = bare }
             marked.append(node)
             boxes.append(frame(node))
-            var line = "[\(marked.count)] \(words[role] ?? "control")"
-            if !name.isEmpty { line += " \"\(name)\"" }
+            var line = "[\(marked.count)] \(label)"
+
             if inputs.contains(role) || role == "AXSlider" || role == "AXPopUpButton" {
                 let value = tidy(string(node, kAXValueAttribute), Limit.value)
                 if !value.isEmpty && value != name { line += " containing \"\(value)\"" }
@@ -392,9 +419,12 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ 
             if role == "AXHeading" { hush = true }
         }
     }
+    let outer = walk.holder
+    if let inside { walk.holder = inside }
     for child in children(node, role) {
         visit(child, depth + 1, hush, above, &walk)
     }
+    walk.holder = outer
 }
 
 func capture(_ id: CGWindowID, _ size: CGSize, _ longest: CGFloat = Limit.captured) throws -> CGImage {
@@ -477,17 +507,17 @@ func look(_ request: [String: Any]) throws -> [String: Any] {
         web = page(target)
     }
     fresh = false
+    walk.most = Limit.controls - Limit.spared
     if let web { visit(web, 0, false, "", &walk) }
-    var rest = Walk(bounds: bounds, until: until)
+    var rest = Walk(bounds: bounds, until: Date().addingTimeInterval(Limit.seconds / 2))
     rest.skip = web
     rest.around = web != nil
-    rest.visited = walk.visited
     visit(target, 0, web != nil, "", &rest)
     if web != nil && !rest.lines.isEmpty {
         walk.lines.append("Around the page, in the app's own window:")
     }
     walk.lines.append(contentsOf: rest.lines)
-    if rest.hidden > 0 { walk.lines.append("(\(rest.hidden) more tabs and buttons of the app are not listed)") }
+    if rest.hidden > 0 { walk.lines.append("(\(rest.hidden) more buttons of the app are not listed)") }
     walk.cut = walk.cut || rest.cut
     if !loaded(web) { walk.lines.append("(the page is still loading)") }
     let image = try capture(pane_id, bounds.size)
@@ -893,12 +923,30 @@ func write(_ request: [String: Any]) throws -> String {
     }
     scribe(text, pid)
     usleep(Limit.read)
-    let said = "typed \"\(tidy(text, Limit.name))\" \(place)"
     let holder = field ?? element(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute)
-    guard let holder, inputs.contains(kind(holder)), let now = string(holder, kAXValueAttribute) else { return said }
-    let flat = tidy(now, Limit.value)
+    if field == nil, let holder {
+        let role = kind(holder)
+        var name = tidy(string(holder, kAXTitleAttribute), Limit.name)
+        if name.isEmpty { name = tidy(string(holder, kAXDescriptionAttribute), Limit.name) }
+        if name.isEmpty { name = tidy(string(holder, kAXPlaceholderValueAttribute), Limit.name) }
+        if let word = words[role] { place = "into the \(word)\(name.isEmpty ? "" : " \"\(name)\"") that has the cursor" }
+    }
+    let said = "typed \"\(tidy(text, Limit.name))\" \(place)"
+    guard let holder, inputs.contains(kind(holder)), var now = string(holder, kAXValueAttribute) else { return said }
     let probe = tidy(text, 24).replacingOccurrences(of: "…", with: "").lowercased()
-    if now.lowercased().contains(probe) || flat.lowercased().contains(probe) { return "\(said). It now contains \"\(flat)\"" }
+    let holds = { (value: String) in
+        value.lowercased().contains(probe) || tidy(value, Limit.value).lowercased().contains(probe)
+    }
+    if !holds(now), field != nil {
+        let whole = kind(holder) == "AXTextArea" ? now + text : text
+        if AXUIElementSetAttributeValue(holder, kAXValueAttribute as CFString, whole as CFString) == .success {
+            usleep(Limit.read)
+            now = string(holder, kAXValueAttribute) ?? now
+        }
+    }
+    let flat = tidy(now, Limit.value)
+    if flat.isEmpty { return said }
+    if holds(now) { return "\(said). It now contains \"\(flat)\"" }
     return
         "\(said), but the text did not go in. It contains \"\(flat)\". Click the control first, or try another way"
 }
@@ -979,6 +1027,7 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
         return ["text": "ready"]
     case "aim": return ["text": try aim(request)]
     case "visit": return ["text": try visit(request)]
+    case "installed": return ["text": try installed(request)]
     case "hold": return ["text": hold()]
     case "glance": return try glance()
     case "closer": return try closer(request)
