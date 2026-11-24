@@ -17,6 +17,7 @@ enum Limit {
     static let messaging: Float = 1.5
     static let settle: UInt32 = 500_000
     static let key: UInt32 = 12_000
+    static let pressed: Float = 1.2
     static let listed = 30
     static let captured: CGFloat = 2400
     static let sent: CGFloat = 640_000
@@ -48,14 +49,14 @@ let pressable: Set<String> = [
     "AXButton", "AXLink", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton", "AXSlider", "AXMenuItem",
     "AXDisclosureTriangle", "AXIncrementor", "AXSwitch", "AXToggle", "AXTab", "AXColorWell", "AXDockItem",
 ]
-let rows: Set<String> = ["AXRow", "AXOutlineRow"]
+let rows: Set<String> = ["AXRow", "AXOutlineRow", "AXFile"]
 let words: [String: String] = [
     "AXButton": "button", "AXLink": "link", "AXCheckBox": "checkbox", "AXRadioButton": "option",
     "AXPopUpButton": "pop-up", "AXMenuButton": "menu button", "AXSlider": "slider", "AXMenuItem": "menu item",
     "AXDisclosureTriangle": "disclosure", "AXIncrementor": "stepper", "AXSwitch": "switch", "AXToggle": "switch",
     "AXTab": "tab", "AXColorWell": "color", "AXTextField": "text field", "AXTextArea": "text area",
     "AXComboBox": "combo box", "AXSearchField": "search field", "AXRow": "row", "AXOutlineRow": "row",
-    "AXDockItem": "dock item",
+    "AXDockItem": "dock item", "AXFile": "file",
 ]
 let keys: [String: Int] = [
     "a": kVK_ANSI_A, "b": kVK_ANSI_B, "c": kVK_ANSI_C, "d": kVK_ANSI_D, "e": kVK_ANSI_E, "f": kVK_ANSI_F,
@@ -111,6 +112,7 @@ final class Held: @unchecked Sendable {
 nonisolated(unsafe) var woken: Set<pid_t> = []
 nonisolated(unsafe) var fresh = false
 nonisolated(unsafe) var pinned: CGWindowID?
+nonisolated(unsafe) var roster: Set<CGWindowID> = []
 nonisolated(unsafe) var nook: CGWindowID?
 nonisolated(unsafe) var held: pid_t?
 nonisolated(unsafe) var known: Set<pid_t> = []
@@ -325,13 +327,24 @@ func installed(_ request: [String: Any]) throws -> String {
 }
 
 func window(_ app: AXUIElement) -> AXUIElement? {
-    if let pinned, let kept = elements(app, kAXWindowsAttribute).first(where: { number($0) == pinned }) {
-        return kept
+    let all = elements(app, kAXWindowsAttribute)
+    let ids = Set(all.map(number))
+    if let pinned, let kept = all.first(where: { number($0) == pinned }) {
+        let ahead = element(app, kAXFocusedWindowAttribute)
+        guard let ahead, number(ahead) != pinned, !roster.contains(number(ahead)), ids.contains(number(ahead)) else {
+            return kept
+        }
+        repin(ahead, ids)
+        return ahead
     }
-    let found = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute)
-        ?? elements(app, kAXWindowsAttribute).first
-    pinned = found.map(number)
+    let found = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute) ?? all.first
+    if let found { repin(found, ids) } else { pinned = nil }
     return found
+}
+
+func repin(_ window: AXUIElement, _ ids: Set<CGWindowID>) {
+    pinned = number(window)
+    roster = ids
 }
 
 func gather(_ node: AXUIElement, _ depth: Int, _ into: inout [String]) {
@@ -392,6 +405,9 @@ func kind(_ element: AXUIElement) -> String {
     if sub == "AXTabButton" { return "AXTab" }
     if sub == "AXSwitch" || sub == "AXToggle" { return "AXSwitch" }
     if sub == "AXOutlineRow" { return "AXOutlineRow" }
+    if role == "AXImage", attribute(element, "AXFilename") != nil || attribute(element, "AXURL") != nil {
+        return "AXFile"
+    }
     return role
 }
 
@@ -403,6 +419,19 @@ func children(_ node: AXUIElement, _ role: String) -> [AXUIElement] {
         if !shown.isEmpty { return shown }
     }
     return elements(node, kAXChildrenAttribute)
+}
+
+func popped(_ app: AXUIElement, _ window: AXUIElement) -> AXUIElement? {
+    guard var node = element(app, kAXFocusedUIElementAttribute) else { return nil }
+    var menu: AXUIElement?
+    for _ in 0..<Limit.depth {
+        let role = kind(node)
+        if role == "AXMenuBar" || CFEqual(node, window) { return nil }
+        if role == "AXMenu" { menu = node }
+        guard let parent = element(node, kAXParentAttribute) else { break }
+        node = parent
+    }
+    return menu
 }
 
 func shown(_ node: AXUIElement, _ walk: inout Walk) -> Bool {
@@ -592,6 +621,27 @@ func look(_ request: [String: Any]) throws -> [String: Any] {
         walk.lines.append("Around the page, in the app's own window:")
     }
     walk.lines.append(contentsOf: rest.lines)
+    if let now = element(app, kAXFocusedUIElementAttribute), inputs.contains(kind(now)),
+        !marked.contains(where: { CFEqual($0, now) }),
+        element(now, kAXWindowAttribute).map({ number($0) == pane_id }) ?? true
+    {
+        marked.append(now)
+        boxes.append(frame(now))
+        let word = words[kind(now)] ?? "text field"
+        labels.append(word)
+        let value = tidy(string(now, kAXValueAttribute), Limit.value)
+        walk.lines.append(
+            "[\(marked.count)] \(word)\(value.isEmpty ? "" : " containing \"\(value)\"") (focused) that is open for typing now"
+        )
+    }
+    if let open = popped(app, target) {
+        var extra = Walk(bounds: nil, until: Date().addingTimeInterval(Limit.seconds / 2))
+        visit(open, 0, false, "", &extra)
+        if !extra.lines.isEmpty {
+            walk.lines.append("A menu is open on top of the window. Choose from it by number, or press escape to close it:")
+            walk.lines.append(contentsOf: extra.lines)
+        }
+    }
     if rest.hidden > 0 { walk.lines.append("(\(rest.hidden) more buttons of the app are not listed)") }
     walk.cut = walk.cut || rest.cut
     if !loaded(web) { walk.lines.append("(the page is still loading)") }
@@ -775,6 +825,36 @@ func under(_ point: CGPoint, _ app: AXUIElement) -> (AXUIElement, String)? {
     return nil
 }
 
+func holding(_ wanted: AXUIElement, _ box: CGRect?, _ pid: pid_t) -> Bool {
+    guard let now = element(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute) else { return true }
+    if CFEqual(now, wanted) { return true }
+    guard inputs.contains(kind(now)) else { return true }
+    guard let box, let other = frame(now) else { return false }
+    return other.intersects(box)
+}
+
+func focus(_ wanted: AXUIElement, _ box: CGRect?, _ pid: pid_t) -> Bool {
+    _ = AXUIElementSetAttributeValue(wanted, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    usleep(120_000)
+    if holding(wanted, box, pid) { return true }
+    guard let box, box.width > 0, box.height > 0 else { return false }
+    let point = CGPoint(x: box.midX, y: box.midY)
+    for real in [false, true] {
+        if real { tap(point, pid) } else { poke(point, pid) }
+        usleep(220_000)
+        if holding(wanted, box, pid) { return true }
+    }
+    return false
+}
+
+func tail(_ area: AXUIElement) {
+    var end = CFRange(location: (string(area, kAXValueAttribute) ?? "").utf16.count, length: 0)
+    if let range = AXValueCreate(.cfRange, &end) {
+        AXUIElementSetAttributeValue(area, kAXSelectedTextRangeAttribute as CFString, range)
+        usleep(Limit.key * 4)
+    }
+}
+
 func strike(_ point: CGPoint, _ pid: pid_t, _ mode: String) {
     if mode == "real" { tap(point, pid) } else { poke(point, pid) }
 }
@@ -804,25 +884,30 @@ func click(_ request: [String: Any]) throws -> String {
         return "clicked \(label)"
     }
     if inputs.contains(role) {
-        if AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) != .success,
-            let box
-        {
-            poke(CGPoint(x: box.midX, y: box.midY), pid)
+        guard focus(element, box, pid) else {
+            throw Failure(text: "the cursor would not go into \(label); it is still in another field")
         }
-        return "clicked \(label)"
+        if role == "AXTextArea" { tail(element) }
+        return "clicked \(label), and the cursor is in it"
     }
-    if rows.contains(role),
-        AXUIElementSetAttributeValue(element, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success
-    {
-        return "selected \(label)"
+    if rows.contains(role) {
+        if let box, box.width > 0, box.height > 0 {
+            poke(CGPoint(x: box.minX + min(box.width / 2, 60), y: box.midY), pid)
+            return "clicked \(label)"
+        }
+        if AXUIElementSetAttributeValue(element, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success {
+            return "selected \(label)"
+        }
     }
     var names: CFArray?
     AXUIElementCopyActionNames(element, &names)
     let actions = (names as? [String]) ?? []
-    if actions.contains(kAXPressAction as String),
-        AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
-    {
-        return "clicked \(label)"
+    if actions.contains(kAXPressAction as String) {
+        AXUIElementSetMessagingTimeout(element, Limit.pressed)
+        let pressed = AXUIElementPerformAction(element, kAXPressAction as CFString)
+        AXUIElementSetMessagingTimeout(element, 0)
+        if pressed == .success { return "clicked \(label)" }
+        if pressed == .cannotComplete { return "clicked \(label), and it opened something that waits for a choice" }
     }
     guard let box, box.width > 0, box.height > 0 else { throw Failure(text: "it could not be clicked") }
     poke(CGPoint(x: box.midX, y: box.midY), pid)
@@ -841,14 +926,14 @@ func stroke(_ code: Int, _ mask: CGEventFlags, _ pid: pid_t) {
     }
 }
 
-func scribe(_ text: String, _ pid: pid_t) {
+func scribe(_ text: String, _ pid: pid_t, _ single: Bool = false) {
     let source = CGEventSource(stateID: .hidSystemState)
     borrow(pid) {
         for (index, line) in text.components(separatedBy: "\n").enumerated() {
             if index > 0 { stroke(kVK_Return, [], pid) }
             var units = Array(line.utf16)
             while !units.isEmpty {
-                var take = min(Limit.chunk, units.count)
+                var take = min(single ? 1 : Limit.chunk, units.count)
                 if take < units.count, UTF16.isLeadSurrogate(units[take - 1]) { take -= 1 }
                 let piece = Array(units.prefix(take))
                 units.removeFirst(take)
@@ -998,17 +1083,22 @@ func write(_ request: [String: Any]) throws -> String {
                     "\(label) is not something text can go into. Click the place where the text belongs first, and then type without a number"
             )
         }
-        if AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) != .success,
-            let box
-        {
-            poke(CGPoint(x: box.midX, y: box.midY), pid)
+        guard focus(element, box, pid) else {
+            throw Failure(
+                text:
+                    "nothing was typed, because the cursor would not go into \(label); it is still in another field. Finish what that field needs first, like picking one of the choices it offers, or press tab"
+            )
         }
-        usleep(150_000)
         place = "into \(label)"
         field = element
-        if kind(element) != "AXTextArea" { select(element, pid) }
+        if kind(element) != "AXTextArea" {
+            select(element, pid)
+        } else {
+            tail(element)
+        }
     }
-    scribe(text, pid)
+    let cursor = field ?? element(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute)
+    scribe(text, pid, cursor.map { !inputs.contains(kind($0)) } ?? true)
     usleep(Limit.read)
     let holder = field ?? element(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute)
     if field == nil, let holder {
