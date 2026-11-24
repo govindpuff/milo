@@ -134,6 +134,10 @@ pub fn dismiss(id: u64) {
 }
 
 pub async fn ask(card: Card, wait: Duration) -> Option<String> {
+    ask_unless(card, wait, std::future::pending()).await
+}
+
+pub async fn ask_unless(card: Card, wait: Duration, gone: impl Future<Output = ()>) -> Option<String> {
     if !on() {
         return None;
     }
@@ -142,15 +146,27 @@ pub async fn ask(card: Card, wait: Duration) -> Option<String> {
         return None;
     }
     let (id, rx) = show(&card);
-    let answer = tokio::time::timeout(wait, rx).await;
+    let answer = tokio::select! {
+        answer = tokio::time::timeout(wait, rx) => answer.ok().and_then(Result::ok),
+        _ = gone => None,
+    };
     SHOWN.lock().unwrap().remove(&key);
-    match answer {
-        Ok(Ok(action)) => Some(action),
-        _ => {
-            dismiss(id);
-            None
-        }
+    if answer.is_none() {
+        dismiss(id);
     }
+    answer
+}
+
+pub async fn approve_unless(title: &str, body: &str, wait: Duration, gone: impl Future<Output = ()>) -> Option<bool> {
+    let card = Card {
+        title: title.to_string(),
+        body: body.to_string(),
+        actions: vec![
+            Action { id: DECLINE.into(), label: "Decline".into(), primary: false },
+            Action { id: APPROVE.into(), label: "Approve".into(), primary: true },
+        ],
+    };
+    ask_unless(card, wait, gone).await.map(|action| action == APPROVE)
 }
 
 pub async fn approve(title: &str, body: &str, wait: Duration) -> Option<bool> {

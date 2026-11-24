@@ -24,6 +24,7 @@ const HOMES: [(&str, &str); 7] = [
 const PROBE: Duration = Duration::from_millis(300);
 const ANSWER: Duration = Duration::from_secs(15);
 const SHOT: Duration = Duration::from_secs(4);
+const QUICK: Duration = Duration::from_millis(1500);
 const BEAT: Duration = Duration::from_millis(40);
 const TURNED: Duration = Duration::from_millis(350);
 const SENT: f64 = 640_000.0;
@@ -491,6 +492,33 @@ impl Browser {
             self.page(tab, &format!("wheel({by})")).await?;
         }
         Ok(())
+    }
+
+    pub async fn peek(&self, tab: &str, expression: &str) -> Option<Value> {
+        let attach = self.send("Target.attachToTarget", json!({ "targetId": tab, "flatten": true }), None);
+        let got = tokio::time::timeout(QUICK, attach).await.ok()?.ok()?;
+        let session = got["sessionId"].as_str()?.to_string();
+        let ask = json!({ "expression": expression, "returnByValue": true, "userGesture": true });
+        let out = tokio::time::timeout(QUICK, self.send("Runtime.evaluate", ask, Some(&session))).await;
+        let _ = self.send("Target.detachFromTarget", json!({ "sessionId": session }), None).await;
+        Some(out.ok()?.ok()?["result"]["value"].clone())
+    }
+
+    pub async fn media(&self, play: bool) -> Vec<String> {
+        let script = match play {
+            true => {
+                "(() => { let n = 0; for (const m of document.querySelectorAll('video,audio')) if (m.dataset.miloPaused) { delete m.dataset.miloPaused; m.play(); n++; } return n; })()"
+            }
+            false => {
+                "(() => { let n = 0; for (const m of document.querySelectorAll('video,audio')) if (!m.paused && !m.ended) { m.pause(); m.dataset.miloPaused = '1'; n++; } return n; })()"
+            }
+        };
+        let tabs = self.tabs().await.unwrap_or_default();
+        let asked = tabs.iter().filter(|tab| tab.url.starts_with("http")).map(|tab| async move {
+            let hit = self.peek(&tab.id, script).await.and_then(|n| n.as_u64()).unwrap_or(0);
+            (hit > 0).then(|| tab.title.clone())
+        });
+        futures_util::future::join_all(asked).await.into_iter().flatten().collect()
     }
 
     pub async fn read(&self, tab: &str) -> Result<String> {
