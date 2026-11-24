@@ -153,6 +153,14 @@ struct Args {
     output_device: Option<String>,
     #[arg(long, help = "List the audio devices and exit")]
     list_devices: bool,
+    #[arg(
+        long,
+        value_name = "TEXT",
+        help = "Carry out one task in your apps without the voice, print how it went and exit"
+    )]
+    task: Option<String>,
+    #[arg(long, value_name = "TEXT", help = "A step of the plan for --task; repeat it for each step")]
+    step: Vec<String>,
 }
 
 async fn status(talking: Arc<AtomicBool>, busy: Arc<AtomicBool>) {
@@ -186,6 +194,9 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if let Some(task) = args.task.clone() {
+        return solo(args, &task);
+    }
     if args.no_notch {
         return run(args);
     }
@@ -199,6 +210,20 @@ fn main() -> Result<()> {
         };
         std::process::exit(code);
     });
+    Ok(())
+}
+
+fn solo(args: Args, task: &str) -> Result<()> {
+    let base_url = args.llm_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}/v1", args.port));
+    let server = match args.llm_url {
+        Some(_) => None,
+        None => llm::server::ensure_running(&args.model, args.port)?,
+    };
+    let llm = Llm::new(&base_url, &args.model);
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+    let out = rt.block_on(computer::solo(&llm, task, &args.step));
+    drop(server);
+    println!("{}", out?);
     Ok(())
 }
 
