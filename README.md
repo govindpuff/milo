@@ -121,6 +121,18 @@ website.
 When milo finishes, it tells you what it did. milo works on one plan at a time,
 and stops a plan that takes longer than six minutes.
 
+### What milo learns
+
+After each plan, milo writes short notes about the app or the website that it
+worked in: which actions got something done there, and which did nothing. The
+next plan in that place starts with those notes, so milo takes fewer steps.
+milo rewrites the notes of a place when a plan there had steps that failed or
+did nothing.
+
+The notes are in `~/.config/milo/skills`, one file for each app or website. To
+change what milo does in a place, edit its file. To make milo learn a place
+again, delete its file.
+
 ### Quick actions
 
 For some requests, milo doesn't click through a window at all:

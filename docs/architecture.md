@@ -46,7 +46,7 @@ The workspace has the following crates:
 
 | Crate | What it does |
 |---|---|
-| `crates/milo` | The `milo` binary. `main.rs` has the command-line options, the system prompt, start-up, and shutdown. `controller.rs` runs the conversation. `reply.rs` streams a reply from the model and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` records and picks reaction clips. `capture.rs` runs the capture thread. `tools.rs` has the tool agent, the tools, and memory. `computer.rs` carries out an approved plan in your apps. |
+| `crates/milo` | The `milo` binary. `main.rs` has the command-line options, the system prompt, start-up, and shutdown. `controller.rs` runs the conversation. `reply.rs` streams a reply from the model and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` records and picks reaction clips. `capture.rs` runs the capture thread. `tools.rs` has the tool agent, the tools, and memory. `computer.rs` carries out an approved plan in your apps. `skills.rs` keeps the notes that the operator learns about each app and website. |
 | `crates/audio` | Microphone and speaker I/O through cpal, lock-free ring buffers, resampling, echo reference alignment, and playback with flush and onset timing. |
 | `crates/speech` | Rust bindings to `swift/MiloSpeech`, a Swift static library that wraps FluidAudio: LocalVQE echo removal, Parakeet EOU streaming recognition, and Parakeet TDT 0.6B v2 for the second pass. Its build script runs `swift build` and links the result. |
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn v3.2) through ONNX Runtime, and the second-pass thread. It downloads both models on first use. |
@@ -530,6 +530,27 @@ before it if that place still exists. Otherwise it starts nowhere, and the
 operator has to go to a place with `open` or `tab` before any other tool works.
 The first message lists the apps that have windows, marks the one in front and
 the one that milo runs in, and lists the open tabs.
+
+#### Notes about a place
+
+`skills.rs` keeps notes about each app and website that the operator has
+worked in, in `~/.config/milo/skills`. A file is named after the app or the
+host of the site, starts with that name as a heading, and holds up to 12
+notes, one per line.
+
+- **Recording.** The operator records each action with its result, the place
+  that it ended in, and whether the action failed, changed nothing, or
+  repeated an earlier one.
+- **Writing.** When a plan ends, finishes with an error, or is stopped, milo
+  asks the model to rewrite the notes of each place where the plan took two
+  actions or more. The model gets the notes so far, the task, the recorded
+  actions, and how the plan ended. milo skips a place that already has notes
+  when no action there was wasted. The request runs after the result is
+  spoken, at background priority. `milo --task` waits for it before it exits.
+- **Reading.** The operator's first message holds the notes of the place that
+  it starts in, and of up to two places that the task or the steps name. When
+  the operator arrives in another place, milo adds the notes of that place to
+  the first message.
 
 #### Browser tabs
 
