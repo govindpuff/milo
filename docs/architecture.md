@@ -527,8 +527,11 @@ approval covers the whole plan. The tool exists only when the panel is on.
 
 After you approve, `computer.rs` runs a second agent, the *operator*, with its
 own prompt and the tools `open`, `click`, `type`, `press`, `scroll`, `read`,
-`menu`, `look`, and `show`. When a browser is connected, the operator also has
-`tab` and `close_tab`.
+`menu`, and `look`. When a browser is connected, the operator also has `tab`
+and `close_tab`. A click names a control by its number in the list, by its
+exact name, or by a description of what the picture shows. The plan has a
+`show` flag, which the tool agent sets when you asked to see the result. milo
+then brings the place to the front after the operator finishes.
 
 The operator works in one *place* at a time: a browser tab, or the window of an
 app. Neither has to be in front. milo keeps the place, its own browser window,
@@ -666,6 +669,23 @@ brings back the app that was in front if the new app takes its place. When
 
 milo never works in a window that belongs to the system, such as a permission
 prompt.
+
+The helper keeps to one window of the app. It moves to a new window when an
+action opens one and the app makes it the focused window, for example after
+**File** > **New**. The list also holds the following:
+
+- The items of a menu that is open on top of the window. A button that opens
+  such a menu doesn't answer the press until the menu closes, so the helper
+  waits for 1.2 seconds and then reads the menu.
+- The field that has the cursor, when the window's own list doesn't have it,
+  such as the name of a file that Finder is renaming.
+- Files that Finder shows as icons.
+
+Before the helper types into a field by its number, it checks that the cursor
+went into that field. If the cursor stays in another field, nothing is typed,
+and the operator gets an error. Text for a text area goes in at its end.
+Outside a text field, for example in Calculator, the helper sends one key at a
+time.
 
 Background input uses private functions from the SkyLight framework, which
 milo loads at run time:
