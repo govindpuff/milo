@@ -13,6 +13,8 @@ clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 futures-util = "0.3"
 jiff = "0.2"
+base64 = "0.22"
+browser = { path = "../browser" }
 control = { path = "../control" }
 llm = { path = "../llm" }
 log = "0.4"

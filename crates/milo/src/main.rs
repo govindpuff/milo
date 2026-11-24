@@ -351,6 +351,9 @@ fn run(args: Args) -> Result<()> {
     if notch::on() {
         let _rt = rt.enter();
         tokio::spawn(status(talking.clone(), busy.clone()));
+        if hands.is_some() {
+            tokio::spawn(computer::warm());
+        }
         if args.push_to_talk {
             notch::mute(true);
         }

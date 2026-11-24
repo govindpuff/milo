@@ -171,8 +171,8 @@ impl Tools {
         if notch::on() {
             list.push(tool(
                 "computer",
-                "Do something on the person's computer by using its apps for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing a song, or reading something off the screen. It opens the apps and websites it needs, so do not call open as well. If they have not said something the task needs, like what a message should say or who it is for, do not call this: Milo will ask them.",
-                "use the apps on their computer for them, by clicking and typing",
+                "Do something on the person's computer by using its apps and its browser for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending a message, writing a note, searching a site, changing a setting, playing, pausing or stopping a song or a video, closing or switching a tab, or reading something off a page. It opens the apps and websites it needs, so do not call open as well. It remembers where it worked last, so it can go on with that video, that tab or that page. If they have not said something the task needs, like what a message should say or who it is for, do not call this: Milo will ask them.",
+                "do things in their apps and their browser for them, like clicking a button, typing, playing or pausing a video, closing a tab, filling in a form or reading a page",
                 json!({
                     "task": {
                         "type": "string",
@@ -181,7 +181,7 @@ impl Tools {
                     "steps": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "The plan, as two to six short steps in order, like Open Messages. Each step names the app and the exact words to type, taken from what they said. Never make up words to type.",
+                        "description": "The plan, as one to six short steps in order, like Open Messages. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type. When they ask to see or watch something, make the last step Show it to them.",
                     },
                 }),
                 &["task", "steps"],
@@ -197,8 +197,8 @@ impl Tools {
             ));
             list.push(tool(
                 "stop",
-                "Stop what is being done on the person's computer right now. Use it when they say to stop, cancel or never mind, or that it is not working, while something is still being done there.",
-                "stop what is being done on their computer",
+                "Stop the plan that computer is carrying out right now. Use it only while a plan is still being carried out, when they say to stop, cancel or never mind, or that it is not working. It does not stop a video, music or anything else that is playing: use computer for that.",
+                "stop a plan that is being carried out on their computer",
                 json!({}),
                 &[],
                 Kind::Halt,
