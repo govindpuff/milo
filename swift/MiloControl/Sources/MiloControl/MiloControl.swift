@@ -34,6 +34,8 @@ enum Limit {
     static let sought = 1500
     static let around = 24
     static let spared = 40
+    static let thin: CGFloat = 3
+    static let mine = CGSize(width: 1120, height: 760)
     static let read: UInt32 = 200_000
 }
 
@@ -295,6 +297,7 @@ struct Walk {
     var plain = 0
     var most = Limit.controls
     var holder = ""
+    var unseen = 0
     var last = ""
     let bounds: CGRect?
     let until: Date
@@ -341,6 +344,14 @@ func children(_ node: AXUIElement, _ role: String) -> [AXUIElement] {
     return elements(node, kAXChildrenAttribute)
 }
 
+func shown(_ node: AXUIElement, _ walk: inout Walk) -> Bool {
+    guard let bounds = walk.bounds, let box = frame(node) else { return true }
+    let part = box.intersection(bounds)
+    if !part.isNull, part.width >= Limit.thin, part.height >= Limit.thin { return true }
+    walk.unseen += 1
+    return false
+}
+
 func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ walk: inout Walk) {
     if depth > Limit.depth { return }
     walk.visited += 1
@@ -379,14 +390,17 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ 
         if walk.around && !tab && !inputs.contains(role) { walk.plain += 1 }
         let full = walk.around && !tab && !inputs.contains(role) && walk.plain > Limit.around
         if full { walk.hidden += 1 }
-        if bare == above || full {
+        let echo = role == "AXLink" && !name.isEmpty && walk.holder.lowercased().contains(name.lowercased())
+        if bare == above || full || echo {
+            hush = true
+        } else if (!name.isEmpty || inputs.contains(role)) && !shown(node, &walk) {
             hush = true
         } else if !name.isEmpty || inputs.contains(role) {
             above = bare
             if role == "AXTab" || role == "AXRadioButton" || rows.contains(role) { inside = bare }
             marked.append(node)
             boxes.append(frame(node))
-            var line = "[\(marked.count)] \(label)"
+            var line = "[\(marked.count)] \(bare)"
 
             if inputs.contains(role) || role == "AXSlider" || role == "AXPopUpButton" {
                 let value = tidy(string(node, kAXValueAttribute), Limit.value)
@@ -413,7 +427,7 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ 
             text = tidy(parts.joined(separator: " "), Limit.value)
         }
         if text.isEmpty && role != "AXHeading" { text = tidy(string(node, kAXTitleAttribute), Limit.value) }
-        if !text.isEmpty && text != walk.last {
+        if !text.isEmpty && text != walk.last && shown(node, &walk) {
             walk.texts += 1
             walk.lines.append(role == "AXHeading" ? "heading: \(text)" : "text: \(text)")
             if role == "AXHeading" { hush = true }
@@ -867,6 +881,12 @@ func visit(_ request: [String: Any]) throws -> String {
         restore(pid, true)
         guard let made else { throw Failure(text: "the browser did not open a window") }
         nook = made
+        if let fresh = windows().first(where: { number($0) == made }) {
+            var size = Limit.mine
+            if let value = AXValueCreate(.cgSize, &size) {
+                AXUIElementSetAttributeValue(fresh, kAXSizeAttribute as CFString, value)
+            }
+        }
     }
     pinned = nook
     guard let target = window(app), let bounds = frame(target), bounds.width > 1 else {
