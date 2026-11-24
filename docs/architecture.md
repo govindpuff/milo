@@ -581,6 +581,12 @@ message when it is the last message, or as a message of their own after a tool
 result. If a server refuses a request that has a picture, milo sends the lists
 alone from then on.
 
+The list goes with every request. The picture goes only when the model is
+likely to need it, because a picture costs more tokens than the list: when a
+task starts, when the model calls `look`, when an action fails or leaves the
+list unchanged, and when the list has fewer than five controls. Outside a
+task, `see` always sends both.
+
 A task ends when a turn ends, which is when the model replies without a tool
 call. milo then removes the card, puts back the app that was in front, and
 writes the notes. If the plan has the `show` flag, which the model sets when
