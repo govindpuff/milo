@@ -3,6 +3,7 @@ mod computer;
 mod controller;
 mod react;
 mod reply;
+mod skills;
 mod tools;
 mod tts;
 

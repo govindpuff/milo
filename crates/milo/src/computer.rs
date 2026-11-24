@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::controller::Event;
+use crate::skills;
 use crate::tools;
 
 const MAX_STEPS: usize = 30;
@@ -68,6 +69,7 @@ Rules:
 - show brings the place you are in to the front of their screen. Use it as your last action when they asked to see, watch or be shown something. Otherwise leave their screen as it is.
 - The result of each action says what left the place and what is new in it. Read it to see what your action did. When something you meant to remove is listed as gone, that part is done.
 - If an action fails or the screen did not change the way you expected, try another way.
+- The first message can hold notes from earlier work in an app or a site. They say what got things done there before, and what did nothing. Carry out each step of the plan the way the notes give for it, and do not try what they say does not work. When the screen shows that a note is wrong, trust the screen.
 - Only work in the app or the site the plan names. If it will not open, stop and say so. Never use a different app in its place.
 - You may close an advertisement or a cookie banner that is in the way. But when something asks you to allow, approve, confirm, restore, sign in, pay, delete or send something the plan does not cover, do not answer it in any way, not even to cancel it. Stop and say what it is asking.
 - Before you type or send anything meant for a person, check that the picture and the list show that person's conversation is the one open, by its name. A name that is merely listed in a sidebar is not open. If the wrong conversation is open or you cannot tell, do not type: open the right one first, or stop and say you could not find it.
@@ -93,6 +95,7 @@ const HOSTING: &str = " (Milo itself runs in this app; never work in it)";
 const SPRUNG: &str = ". It opened in a new tab, and you are in that tab now";
 const UNLINKED: &str = "the browser's tabs cannot be reached; work in the browser's window with open, click and press";
 const OFF: &str = "no browser allows remote debugging, so websites are read off the screen, which is slower and less exact. To fix that, open chrome://inspect/#remote-debugging in the browser and turn on Allow remote debugging for this browser instance";
+const CUT: &str = "the person stopped it before it finished";
 const KNOCK: &str = "Connecting to the browser. If it asks whether to allow remote debugging, click Allow.";
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -106,6 +109,7 @@ static SESSION: tokio::sync::Mutex<Session> = tokio::sync::Mutex::const_new(Sess
     past: Vec::new(),
     warned: false,
     lent: None,
+    trail: Vec::new(),
 });
 
 #[derive(Clone, PartialEq)]
@@ -123,6 +127,7 @@ struct Session {
     past: Vec<String>,
     warned: bool,
     lent: Option<String>,
+    trail: Vec<skills::Step>,
 }
 
 struct Running;
@@ -296,6 +301,18 @@ async fn front() -> Option<String> {
     let apps = control(json!({ "op": "around" })).await.ok()?;
     let front = apps["apps"].as_array()?.iter().find(|app| app["front"] == true)?;
     front["name"].as_str().map(str::to_string)
+}
+
+async fn here(s: &Session) -> String {
+    match &s.place {
+        Place::None => String::new(),
+        Place::Window => act(json!({ "op": "start" })).await.unwrap_or_default(),
+        Place::Tab(tab) => {
+            let Some(browser) = &s.browser else { return String::new() };
+            let tabs = browser.tabs().await.unwrap_or_default();
+            tabs.iter().find(|have| have.id == *tab).map(|have| site(&have.url).to_string()).unwrap_or_default()
+        }
+    }
 }
 
 async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
@@ -755,7 +772,7 @@ async fn enter(s: &mut Session, what: &str) -> Result<String, String> {
     did
 }
 
-async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String, Seen) {
+async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String, Seen, bool) {
     let text = |key: &str| call.args.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let name = call.name.as_str();
     let nowhere = || Err(format!("{NOWHERE} first"));
@@ -894,6 +911,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
     };
     let mut after = after;
     let quiet = ["look", "read", "show"].contains(&name);
+    let failed = did.is_err();
     let mut did = match did {
         Ok(text) if !quiet && s.place == Place::Window && place == Place::Window && after.same(before) => {
             if s.lent.is_none() {
@@ -916,7 +934,8 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
         did.push_str(&changed(before, &after));
     }
     keep(&after, &format!("{name} {} -> {did}", Value::Object(call.args.clone())));
-    (did, after)
+    let wasted = failed || (!quiet && after.same(before));
+    (did, after, wasted)
 }
 
 fn written(text: &str, schema: &Value) -> Option<Call> {
@@ -985,6 +1004,7 @@ async fn work(
     let _ = std::fs::remove_dir_all(saved());
     let _ = std::fs::create_dir_all(saved());
     SHOT.store(0, Relaxed);
+    s.trail.clear();
     link(s, ALLOW, Some((id, task))).await;
     arrive(s).await;
     let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
@@ -1003,6 +1023,17 @@ async fn work(
     let mut before = screen(s).await;
     if s.place != Place::None {
         lead.push_str(&format!("\n\n{}", around(s).await));
+    }
+    let mut briefed: Vec<String> = Vec::new();
+    let asked = format!("{task}\n{}", steps.join("\n"));
+    for place in std::iter::once(here(s).await).chain(skills::named(&asked)) {
+        if briefed.contains(&skills::slug(&place)) {
+            continue;
+        }
+        if let Some(notes) = skills::brief(&place) {
+            lead.push_str(&notes);
+            briefed.push(skills::slug(&place));
+        }
     }
     keep(&before, &lead);
     let first = Seen { text: before.text.clone(), image: before.image.clone(), print: Vec::new() };
@@ -1048,9 +1079,9 @@ async fn work(
             log::info!("why: {why}");
         }
         let _ = events.send(Event::Doing(format!("{} {}", call.name, Value::Object(call.args.clone()))));
-        let (mut did, now) = step(llm, s, &call, &before).await;
+        let (mut did, now, wasted) = step(llm, s, &call, &before).await;
         let key = format!("{} {}", call.name, Value::Object(call.args.clone()));
-        let ended = done.entry(key).or_default();
+        let ended = done.entry(key.clone()).or_default();
         let again = ended.iter().filter(|text| **text == now.text).count();
         ended.push(now.text.clone());
         if again >= STUCK && call.name != "look" {
@@ -1063,7 +1094,13 @@ async fn work(
             bail!("it kept typing the same thing and was stopped before finishing {task}");
         }
         let short: String = did.lines().next().unwrap_or_default().chars().take(LOGGED).collect();
-        log::info!("{} {} -> {short}", call.name, Value::Object(call.args.clone()));
+        log::info!("{key} -> {short}");
+        let place = here(s).await;
+        s.trail.push(skills::Step {
+            place: place.clone(),
+            did: format!("{key} -> {short}"),
+            wasted: wasted || again >= 1,
+        });
         if call.name == "type" && !did.contains("failed") {
             typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));
         }
@@ -1084,6 +1121,12 @@ async fn work(
                 old.content = old.content.chars().take(OLD).collect::<String>() + "…";
             }
         }
+        if !place.is_empty() && !briefed.contains(&skills::slug(&place)) {
+            briefed.push(skills::slug(&place));
+            if let Some(notes) = skills::brief(&place) {
+                messages[1].content.push_str(&notes);
+            }
+        }
         messages.push(Message::called(std::slice::from_ref(&call)));
         messages.push(Message::tool(&call.id, did));
         messages.push(Seen { text: now.text.clone(), image: now.image.clone(), print: Vec::new() }.message(""));
@@ -1097,10 +1140,17 @@ pub async fn solo(llm: &Llm, task: &str, steps: &[String]) -> Result<String> {
     tokio::spawn(async move { while seen.recv().await.is_some() {} });
     let talking = AtomicBool::new(false);
     let plan = if steps.is_empty() { vec![task.to_string()] } else { steps.to_vec() };
-    match tokio::time::timeout(TOTAL, drive(llm, &talking, &events, task, &plan, 0)).await {
+    let out = match tokio::time::timeout(TOTAL, drive(llm, &talking, &events, task, &plan, 0)).await {
         Ok(out) => out,
         Err(_) => Err(anyhow!("it took too long and was stopped before finishing {task}")),
-    }
+    };
+    let ended = match &out {
+        Ok(said) => said.clone(),
+        Err(e) => format!("{e:#}"),
+    };
+    let trail = std::mem::take(&mut SESSION.lock().await.trail);
+    skills::learn(llm.clone(), task.to_string(), trail, ended).await;
+    out
 }
 
 pub async fn glimpse(llm: &Llm, question: &str) -> Result<String> {
@@ -1257,5 +1307,12 @@ pub async fn run(
         _ = HALT.notified() => Ok(None),
     };
     notch::dismiss(id);
+    let ended = match &out {
+        Ok(Some(said)) => said.clone(),
+        Ok(None) => CUT.to_string(),
+        Err(e) => format!("{e:#}"),
+    };
+    let trail = std::mem::take(&mut SESSION.lock().await.trail);
+    tokio::spawn(skills::learn(llm.clone(), task.to_string(), trail, ended));
     out
 }
