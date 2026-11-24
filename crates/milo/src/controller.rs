@@ -366,6 +366,9 @@ impl Controller {
     }
 
     fn maybe_nudge(&mut self, now: Instant) {
+        if crate::computer::running() || !self.asides.is_empty() {
+            self.idle_since = self.idle_since.map(|_| now);
+        }
         let quiet =
             self.quiet() && self.asides.is_empty() && !self.settings.busy.load(Relaxed) && !crate::computer::running();
         if !quiet || self.nudge_at().is_none_or(|at| now < at) {
