@@ -5,14 +5,15 @@ use std::time::Instant;
 
 use futures_util::StreamExt;
 use llm::chunker::Chunker;
-use llm::{Llm, Message};
+use llm::{Call, Llm, Message, Piece};
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::computer;
 use crate::controller::Event;
 use crate::react::{Bank, Probe};
 use crate::tts::Job;
 
-pub const FULL_WORDS: usize = 5;
 const MOOD_CHARS: usize = 80;
 const PIECE_WORDS: usize = 40;
 const DULL: &[&str] = &[
@@ -56,6 +57,7 @@ pub async fn generate(
     said: Option<usize>,
     skip: Option<usize>,
     brief: bool,
+    tools: Option<Arc<Value>>,
 ) {
     let mut mood: Option<String> = None;
     let mut lead: Option<String> = Some(String::new());
@@ -67,6 +69,8 @@ pub async fn generate(
     let mut probe: Option<String> = (!bank.is_empty()).then(String::new);
     let mut first = false;
     let mut after: Option<usize> = None;
+    let mut calls: Vec<Call> = Vec::new();
+    let mut begun = false;
     let open = |held: String, end: bool, spoken: &mut Vec<String>| -> Result<(String, Option<usize>), String> {
         match bank.probe(&held, end) {
             Probe::Wait => Err(held),
@@ -91,14 +95,26 @@ pub async fn generate(
         let _ = jobs.send(Job::Say { turn, text: text.clone(), instruct: mood.clone(), lead, stop: stop.clone() });
         let _ = events.send(Event::Chunk { turn, text });
     };
-    match llm.stream(&messages).await {
+    let opened = match llm.stream(&messages, tools.as_deref()).await {
+        Err(e) if messages.iter().any(|m| m.image.is_some()) && format!("{e:#}").contains(" 400") => {
+            log::warn!("the model refused the picture, so it gets the list alone from now on: {e:#}");
+            computer::blind();
+            let mut bare = messages.clone();
+            bare.iter_mut().for_each(|m| m.image = None);
+            llm.stream(&bare, tools.as_deref()).await
+        }
+        other => other,
+    };
+    match opened {
         Ok(mut stream) => {
             while let Some(item) = stream.next().await {
+                if !begun {
+                    begun = true;
+                    let _ = events.send(Event::LlmFirst { turn, at: Instant::now() });
+                }
                 match item {
-                    Ok(delta) => {
-                        if raw.is_empty() {
-                            let _ = events.send(Event::LlmFirst { turn, at: Instant::now() });
-                        }
+                    Ok(Piece::Calls(found)) => calls.extend(found),
+                    Ok(Piece::Text(delta)) => {
                         raw.push_str(&delta);
                         let text = match lead.take() {
                             Some(mut held) => {
@@ -197,8 +213,13 @@ pub async fn generate(
         (Some(m), true) => format!("[{m}]"),
         (None, _) => spoken.join(" "),
     };
-    let _ = jobs.send(Job::End { turn });
-    let _ = events.send(Event::LlmDone { turn, text, error });
+    if calls.is_empty() && tools.is_some() {
+        calls = llm::inline_calls(&raw);
+    }
+    if calls.is_empty() {
+        let _ = jobs.send(Job::End { turn });
+    }
+    let _ = events.send(Event::LlmDone { turn, text, calls, error });
 }
 
 fn tone(mood: &str) -> String {
@@ -210,22 +231,6 @@ fn tone(mood: &str) -> String {
         .take(2)
         .collect();
     if kept.is_empty() { EASY.to_string() } else { kept.join(", ") }
-}
-
-pub fn sentences(text: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if matches!(c, '.' | '!' | '?') && chars.peek().is_none_or(|(_, n)| n.is_whitespace()) {
-            out.push(&text[start..i + c.len_utf8()]);
-            start = i + c.len_utf8();
-        }
-    }
-    if !text[start..].trim().is_empty() {
-        out.push(&text[start..]);
-    }
-    out
 }
 
 pub fn words(sentence: &str) -> usize {

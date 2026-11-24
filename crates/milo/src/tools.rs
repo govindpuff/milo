@@ -1,15 +1,13 @@
-use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use llm::{Call, Llm, Message};
+use llm::{Call, Llm, Message, Role};
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::computer;
 use crate::controller::Event;
@@ -17,13 +15,12 @@ use crate::controller::Event;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(45);
-const ASKED: &str = "asked them to approve it on their screen; it runs if they approve";
+const ASKED: &str = "asked them to approve it on their screen. Nothing has happened yet: it runs if they approve, and you are told how it went";
 const RESULT_CHARS: usize = 700;
 const FILE_SHOWN: usize = 900;
 static UNASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static PLANS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NEWER: tokio::sync::Notify = tokio::sync::Notify::const_new();
-const DONE_KEPT: usize = 4;
 const SCRIPTED: Duration = Duration::from_secs(20);
 const PEOPLE_LISTED: usize = 80;
 const CHATS: &str = "500";
@@ -31,40 +28,11 @@ const IMSG: [&str; 3] = ["/opt/homebrew/bin/imsg", "/usr/local/bin/imsg", "imsg"
 const NO_CHATS: &str = "imsg could not read any conversations. The terminal app that runs Milo needs Full Disk Access, under Privacy & Security in System Settings";
 const NO_NAMES: &str = "imsg could read the conversations but not the names of the people in them. The terminal app that runs Milo needs access to Contacts, or Full Disk Access, under Privacy & Security in System Settings";
 const NO_IMSG: &str = "nothing was sent: the imsg command is not installed on this Mac. They can install it with: brew install steipete/tap/imsg";
-const DONE_CHARS: usize = 90;
-const NOTHING: &str = "nothing was done: the helper has no way to do what they asked. All it can do is: {abilities}. If what they asked is not one of those, tell them plainly that you can't do that. If it is one of those and a detail is missing, ask for the detail";
-const MAX_CALLS: usize = 2;
-const MAX_STEPS: usize = 4;
 const MEMORY_LINES: usize = 60;
-const TURNED: &str =
-    "the helper can do what they just asked after all, and has put it on their screen for them to approve";
-const CONFUSED: &str = "the helper failed: it could not work out the request; ask them to say it again";
 const MAX_TIMER: f64 = 24.0 * 3600.0;
-const YIELD_POLL: Duration = Duration::from_millis(20);
-const YIELD_MAX: Duration = Duration::from_secs(4);
-
-const DOER_PROMPT: &str = "You work silently beside Milo, who is on a live voice call with a person. You never speak. \
-Your only job is to notice when the person asks for something one of your tools does, and call that tool.
-
-Rules:
-- Milo cannot do anything itself. Nothing ever happens unless you call a tool, no matter what Milo says in the call. You alone decide whether something can be done.
-- Use the most direct tool. media pauses, resumes and skips what is playing. close_tab and show_tab handle a browser tab. file writes text into a file, and opens the file in an app when you name one, so when they want something written, call file alone. message sends a text message to someone, so when they want someone texted, call message alone. open brings up an app or a site. Use computer only for what none of those does.
-- When they correct or change what they just asked, call the tool once more with the corrected request in full. It replaces the earlier one.
-- Act on the person's latest message. The earlier lines are only there so you can work out what they mean, like which city or which app.
-- Call a tool when they ask for something a tool does, or ask a question a tool answers, like what the weather is. A request can be casual: can you open chrome, check boston, remind me in five.
-- Already done lists what you did before. If they ask for the same thing again, or say it did not happen, do it again.
-- The words come from speech recognition, so expect small mistakes. Write names out in full: SF is San Francisco.
-- If they are only chatting, thinking out loud, describing how Milo works, or asking for something no tool does, do nothing.
-- Fill arguments only from what they said. Leave out anything they did not say.
-- Memory: when they tell you a lasting fact about themselves or their life, like their name, where they live, their people and pets, their work, what they like, or a plan, call remember even though they did not ask. Also call it when they ask you to remember, note or write something down. Do not remember small talk, passing moods, questions, or anything already listed under Known about the person. If they ask to write something down but have not said what yet, do nothing.
-- Being asked whether you can do something is not a request to do it. Can you take notes is a question; do nothing.
-- To do nothing, reply with exactly: none
-
-After a tool answers:
-- Check that it is really what they asked for. If it is about the wrong person, place or thing, or it failed in a way you can fix, call a tool again with something better, like the full correct name. Do not give up after one bad result, and never pass on a result that is about the wrong thing.
-- When you have what they asked for, stop calling tools and write one or two short plain sentences that Milo will say to them: only the facts they asked for, taken from the tool results, nothing else.
-- If the results do not contain what they asked for, say that in one sentence. Never fill a gap from memory.
-- If it could not be done, say what went wrong in one sentence.";
+const OLD: usize = 300;
+const ROUNDS: usize = 60;
+const SHOWN: usize = 300;
 
 pub fn unasked() {
     UNASKED.store(true, Relaxed);
@@ -92,7 +60,7 @@ enum Kind {
     Remember,
     Forget,
     Computer,
-    Halt,
+    Screen,
     Message,
     See,
     Media,
@@ -105,16 +73,14 @@ enum Kind {
 struct Tool {
     name: String,
     description: String,
-    can: String,
     parameters: Value,
     kind: Kind,
 }
 
-fn tool(name: &str, description: &str, can: &str, properties: Value, required: &[&str], kind: Kind) -> Tool {
+fn tool(name: &str, description: &str, properties: Value, required: &[&str], kind: Kind) -> Tool {
     Tool {
         name: name.into(),
         description: description.into(),
-        can: can.into(),
         parameters: json!({
             "type": "object",
             "properties": properties,
@@ -129,17 +95,16 @@ pub struct Tools {
     list: Vec<Tool>,
     http: reqwest::Client,
     events: UnboundedSender<Event>,
-    llm: Llm,
-    talking: Arc<AtomicBool>,
+    vision: Llm,
+    small: Llm,
 }
 
 impl Tools {
-    pub fn load(events: UnboundedSender<Event>, llm: Llm, talking: Arc<AtomicBool>) -> Tools {
+    pub fn load(events: UnboundedSender<Event>, vision: Llm, small: Llm, hands: bool) -> Tools {
         let mut list = vec![
             tool(
                 "weather",
                 "Get the current weather and the forecast for today and tomorrow in a city.",
-                "check the weather",
                 json!({
                     "place": {
                         "type": "string",
@@ -151,8 +116,7 @@ impl Tools {
             ),
             tool(
                 "timer",
-                "Start a countdown timer or a timed reminder. Milo tells the person when it finishes.",
-                "set a timer",
+                "Start a countdown timer or a timed reminder. You are told when it finishes.",
                 json!({
                     "minutes": { "type": "number", "description": "Length in minutes. Use this or seconds." },
                     "seconds": { "type": "number", "description": "Length in seconds. Use this or minutes." },
@@ -163,8 +127,7 @@ impl Tools {
             ),
             tool(
                 "open",
-                "Open an app or a website on the person's computer.",
-                "open an app or a website on their computer",
+                "Open an app or a website in front of the person, for them to look at or use themselves.",
                 json!({
                     "what": {
                         "type": "string",
@@ -176,8 +139,7 @@ impl Tools {
             ),
             tool(
                 "remember",
-                "Save something to long-term memory: a lasting fact about the person, or anything they ask to remember, note or write down.",
-                "remember things for them, from this call and earlier ones",
+                "Save something to long-term memory: a lasting fact about the person, or anything they ask you to remember, note or write down.",
                 json!({
                     "fact": {
                         "type": "string",
@@ -190,30 +152,28 @@ impl Tools {
             tool(
                 "forget",
                 "Remove something from long-term memory when they ask to forget or delete it.",
-                "forget something they asked you to remember",
                 json!({ "what": { "type": "string", "description": "A few words from the memory to remove." } }),
                 &["what"],
                 Kind::Forget,
             ),
         ];
-        if notch::on() {
+        if hands {
             list.push(tool(
                 "computer",
-                "Do something on the person's computer by using its apps and its browser for them: clicking, typing and choosing from menus. Use it for anything that takes more than opening an app or a website, like sending an email, writing a note, searching a site, changing a setting, playing, pausing or stopping a song or a video, closing or switching a tab, or reading something off a page. It opens the apps and websites it needs, so do not call open as well. It remembers where it worked last, so it can go on with that video, that tab or that page. If they have not said something the task needs, like what an email should say or who it is for, do not call this: Milo will ask them.",
-                "do things in their apps and their browser for them, like clicking a button, typing, playing or pausing a video, closing a tab, filling in a form or reading a page",
+                "Start working on the person's computer for them, in its apps and its browser. Call it first, with a short plan, whenever what they ask takes more than the other tools do, like sending an email, writing a note in an app, searching a site, changing a setting, or reading something off a page. It answers with what is open on their Mac and what is on the screen. After that you carry out the plan yourself, one action at a time, with go, click, type, press, scroll, read, menu, look and tab. If they have not said something the task needs, like what an email should say or who it is for, ask them instead of calling this.",
                 json!({
                     "task": {
                         "type": "string",
-                        "description": "A short name for what they asked, like Send Priya a message or Play some jazz.",
+                        "description": "A short name for what they asked, like Send Priya an email or Play some jazz.",
                     },
                     "steps": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "The plan, as one to six short steps in order, like Open Messages. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type.",
+                        "description": "The plan, as one to six short steps in order, like Go to mail.google.com. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type.",
                     },
                     "show": {
                         "type": "boolean",
-                        "description": "True only when they asked to see, watch or be shown it, like play a video or pull up a page. Then it is brought to the front of their screen when the plan is done. Leave it out when they just want something done.",
+                        "description": "True only when they asked to see, watch or be shown it, like play a video or pull up a page. Then it is brought to the front of their screen when you are done. Leave it out when they just want something done.",
                     },
                 }),
                 &["task", "steps"],
@@ -221,50 +181,38 @@ impl Tools {
             ));
             list.push(tool(
                 "see",
-                "Look at the window on the person's screen and answer a question about it. Use it when they ask what is on their screen, ask you to look at it, or say that something there is wrong.",
-                "look at the window on their screen and say what is there",
-                json!({ "question": { "type": "string", "description": "What to find out, like What is in this window and is anything wrong." } }),
+                "Look at the window in front on the person's screen. It answers with a picture of the window and a list of what is in it. Use it when they ask what is on their screen, ask you to look at it, or say that something there is wrong.",
+                json!({}),
                 &[],
                 Kind::See,
             ));
             list.push(tool(
-                "stop",
-                "Stop the plan that computer is carrying out right now. Use it only while a plan is still being carried out, when they say to stop, cancel or never mind, or that it is not working. It does not stop a video, music or anything else that is playing: use computer for that.",
-                "stop a plan that is being carried out on their computer",
-                json!({}),
-                &[],
-                Kind::Halt,
-            ));
-        }
-        if notch::on() {
-            list.push(tool(
                 "media",
-                "Pause, stop, resume or skip whatever video or music is playing on the person's computer, in the browser or in an app. Use it whenever they want something that is playing to stop, pause, go on or skip, instead of computer or stop.",
-                "pause, resume or skip a video or music that is playing",
+                "Pause, stop, resume or skip whatever video or music is playing on the person's computer, in the browser or in an app.",
                 json!({ "action": { "type": "string", "enum": ["pause", "play", "next", "previous"] } }),
                 &["action"],
                 Kind::Media,
             ));
             list.push(tool(
                 "close_tab",
-                "Close a tab in the person's browser. Use it instead of computer when all they want is a tab closed.",
-                "close a browser tab",
-                json!({ "which": { "type": "string", "description": "A word or two from the tab's title or address, like youtube. Leave it out when they say that tab, this tab or the tab, which means the one that was just worked in or that is showing." } }),
+                "Close a tab in the person's browser.",
+                json!({
+                    "which": { "type": "string", "description": "A word or two from the tab's title or address, like youtube. Leave it out when they say that tab, this tab or the tab, which means the one that was just worked in or that is showing." },
+                    "number": { "type": "integer", "description": "While you work on their computer, the number of the tab in the list of open tabs, instead of which." },
+                }),
                 &[],
                 Kind::CloseTab,
             ));
             list.push(tool(
                 "show_tab",
-                "Bring a tab that is already open in the person's browser to the front.",
-                "switch to a browser tab that is open",
+                "Bring a tab that is already open in the person's browser to the front, for them to look at.",
                 json!({ "which": { "type": "string", "description": "A word or two from the tab's title or address, like gmail." } }),
                 &["which"],
                 Kind::ShowTab,
             ));
             list.push(tool(
                 "file",
-                "Write a text file on the person's computer, like a note, a list or a short program, and open it in an app if they want. Use it instead of computer whenever they ask for something to be written into a file: it writes the exact text, so nothing has to be typed in a window. You write the whole content yourself.",
-                "write a text file, like a note or a short program, and open it in an app",
+                "Write a text file on the person's computer, like a note, a list or a short program, and open it in an app if they want. Use it whenever they ask for something to be written into a file: it writes the exact text, so nothing has to be typed in a window. You write the whole content yourself.",
                 json!({
                     "path": { "type": "string", "description": "Where the file goes, under their home folder, like Desktop/hello.py or dev/notes.txt." },
                     "content": { "type": "string", "description": "The whole text of the file." },
@@ -275,15 +223,23 @@ impl Tools {
             ));
             list.push(tool(
                 "message",
-                "Send a text message to someone through the Messages app, as an iMessage or an SMS. Use it instead of computer whenever they want someone texted or messaged. It finds the person by name among the people they have conversations with. If they have not said who it is for or what it should say, do not call this: Milo will ask them.",
-                "send a text message to someone through Messages",
+                "Send a text message to someone through the Messages app, as an iMessage or an SMS. Use it whenever they want someone texted or messaged. It finds the person by name among the people they have conversations with. If they have not said who it is for or what it should say, ask them instead of calling this.",
                 json!({
-                    "to": { "type": "string", "description": "Who it is for, by the name they are saved under, like Priya Shah. When Known about the person says what someone is saved as, use that name." },
+                    "to": { "type": "string", "description": "Who it is for, by the name they are saved under, like Priya Shah. When what you remember about them says what someone is saved as, use that name." },
                     "text": { "type": "string", "description": "The exact words of the message, taken from what they said." },
                 }),
                 &["to", "text"],
                 Kind::Message,
             ));
+            for screen in computer::schema() {
+                let f = &screen["function"];
+                list.push(Tool {
+                    name: f["name"].as_str().unwrap_or_default().to_string(),
+                    description: f["description"].as_str().unwrap_or_default().to_string(),
+                    parameters: f["parameters"].clone(),
+                    kind: Kind::Screen,
+                });
+            }
         }
         match custom() {
             Ok(more) => {
@@ -303,14 +259,14 @@ impl Tools {
             .user_agent("milo/0.1")
             .build()
             .expect("reqwest client");
-        Tools { list, http, events, llm, talking }
+        Tools { list, http, events, vision, small }
     }
 
-    pub fn abilities(&self) -> String {
-        self.list.iter().map(|t| t.can.as_str()).collect::<Vec<_>>().join(", ")
+    pub fn hands(&self) -> bool {
+        self.list.iter().any(|t| matches!(t.kind, Kind::Computer))
     }
 
-    fn schema(&self) -> Value {
+    pub fn schema(&self) -> Value {
         Value::Array(
             self.list
                 .iter()
@@ -324,27 +280,28 @@ impl Tools {
         )
     }
 
-    fn direct(&self, name: &str) -> bool {
-        self.list.iter().any(|t| t.name == name && !matches!(t.kind, Kind::Command(_)))
-    }
-
-    fn quiet(&self, name: &str) -> bool {
+    pub fn quiet(&self, name: &str) -> bool {
         self.list.iter().any(|t| t.name == name && matches!(t.kind, Kind::Remember))
     }
 
-    fn gated(&self, name: &str) -> bool {
-        asking()
-            && self.list.iter().any(|t| {
-                t.name == name
-                    && matches!(
-                        t.kind,
-                        Kind::Open | Kind::Computer | Kind::CloseTab | Kind::File | Kind::Message | Kind::Command(_)
-                    )
-            })
+    pub fn rest(&self, ended: &str, done: bool) {
+        computer::rest(&self.small, ended, done);
     }
 
-    async fn attempt(&self, call: &Call) -> Result<String> {
-        let Some(t) = self.list.iter().find(|t| t.name == call.name) else { bail!("there is no such tool") };
+    fn working(call: &Call) -> bool {
+        call.args.contains_key("number") || (!call.args.contains_key("which") && computer::running())
+    }
+
+    fn gated(t: &Tool, call: &Call) -> bool {
+        asking()
+            && match t.kind {
+                Kind::Open | Kind::Computer | Kind::File | Kind::Message | Kind::Command(_) => true,
+                Kind::CloseTab => !Self::working(call),
+                _ => false,
+            }
+    }
+
+    async fn attempt(&self, t: &Tool, call: &Call) -> Result<String> {
         match &t.kind {
             Kind::Weather => self.weather(&call.args).await,
             Kind::Timer => self.timer(&call.args),
@@ -352,17 +309,15 @@ impl Tools {
             Kind::Remember => remember(&call.args),
             Kind::Forget => forget(&call.args),
             Kind::Computer => self.computer(&call.args).await,
-            Kind::Halt => computer::halt(),
-            Kind::See => {
-                let question = text(&call.args, "question").unwrap_or_else(|| "What is in this window?".to_string());
-                computer::glimpse(&self.llm, &question).await
-            }
+            Kind::Screen => Ok(computer::perform(&self.vision, call.clone()).await),
+            Kind::See => computer::see().await,
             Kind::Media => computer::media(&text(&call.args, "action").unwrap_or_else(|| "pause".to_string())).await,
             Kind::ShowTab => {
                 let (tab, title) = computer::pick(&text(&call.args, "which").unwrap_or_default()).await?;
                 computer::shut(&tab, true).await?;
                 Ok(format!("brought the tab {} to the front", clip(&title)))
             }
+            Kind::CloseTab if Self::working(call) => Ok(computer::perform(&self.vision, call.clone()).await),
             Kind::CloseTab => {
                 let (tab, title) = computer::pick(&text(&call.args, "which").unwrap_or_default()).await?;
                 allow("Close this tab?", &title).await?;
@@ -375,16 +330,30 @@ impl Tools {
         }
     }
 
-    async fn run(&self, call: &Call) -> (String, bool) {
-        match self.attempt(call).await {
-            Ok(text) => (clip(&text), true),
-            Err(e) => (format!("{} failed: {}", call.name, clip(&format!("{e:#}"))), false),
+    pub async fn run(self: &Arc<Self>, call: &Call) -> String {
+        let Some(at) = self.list.iter().position(|t| t.name == call.name) else {
+            return format!("there is no tool called {}", call.name);
+        };
+        let t = &self.list[at];
+        if Self::gated(t, call) {
+            self.clone().later(at, call.clone());
+            return ASKED.to_string();
+        }
+        let whole = matches!(t.kind, Kind::Screen | Kind::Computer | Kind::CloseTab);
+        match self.attempt(t, call).await {
+            Ok(text) if whole => text,
+            Ok(text) => clip(&text),
+            Err(e) => format!("{} failed: {}", call.name, clip(&format!("{e:#}"))),
         }
     }
 
-    fn later(self: Arc<Self>, call: Call) {
+    fn later(self: Arc<Self>, at: usize, call: Call) {
         tokio::spawn(async move {
-            match self.attempt(&call).await {
+            let t = &self.list[at];
+            match self.attempt(t, &call).await {
+                Ok(text) if matches!(t.kind, Kind::Computer) => {
+                    let _ = self.events.send(Event::Aside(text));
+                }
                 Ok(text) => {
                     let _ = self.events.send(Event::Aside(clip(&text)));
                 }
@@ -484,9 +453,6 @@ impl Tools {
         if steps.is_empty() {
             steps.push(task.clone());
         }
-        if computer::running() {
-            bail!(computer::BUSY);
-        }
         let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
         let mine = PLANS.fetch_add(1, Relaxed) + 1;
         NEWER.notify_waiters();
@@ -501,11 +467,7 @@ impl Tools {
                 _ => return Err(Skipped.into()),
             }
         }
-        let _claim = computer::claim()?;
-        match computer::run(&self.llm, &self.talking, &self.events, &task, &steps, show).await? {
-            Some(said) => Ok(said),
-            None => Err(Skipped.into()),
-        }
+        computer::begin(&self.events, &task, &steps, show).await
     }
 
     fn timer(&self, args: &Map<String, Value>) -> Result<String> {
@@ -820,15 +782,7 @@ fn custom() -> Result<Vec<Tool>> {
             schema if schema["type"] == "object" => schema.clone(),
             _ => bail!("the parameters of tool {name:?} must be a JSON Schema with \"type\": \"object\""),
         };
-        let mut can = description.trim_end_matches('.').chars();
-        let can = can.next().map(|f| f.to_lowercase().chain(can).collect()).unwrap_or_default();
-        out.push(Tool {
-            name: name.into(),
-            description: description.into(),
-            can,
-            parameters,
-            kind: Kind::Command(argv),
-        });
+        out.push(Tool { name: name.into(), description: description.into(), parameters, kind: Kind::Command(argv) });
     }
     Ok(out)
 }
@@ -917,141 +871,55 @@ pub fn clip(s: &str) -> String {
     }
 }
 
-pub struct Look {
-    pub lines: Vec<String>,
-    pub time: String,
-    pub promised: bool,
-}
-
-fn note(done: &mut VecDeque<(Instant, String, String)>, call: String, result: String) {
-    done.push_back((Instant::now(), call, result));
-    if done.len() > DONE_KEPT {
-        done.pop_front();
+pub fn shorten(history: &mut [Message]) {
+    let read = history.iter().rposition(|m| m.role == Role::Tool && m.content.starts_with(computer::READ));
+    for (at, old) in history.iter_mut().enumerate() {
+        if old.role != Role::Tool || Some(at) == read || old.content.starts_with(computer::LEAD) {
+            continue;
+        }
+        if old.content.chars().count() > OLD {
+            old.content = old.content.chars().take(OLD).collect::<String>() + "…";
+        }
     }
 }
 
-pub fn spawn(
-    llm: Llm,
-    tools: Arc<Tools>,
-    talking: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
-    events: UnboundedSender<Event>,
-) -> UnboundedSender<Look> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(work(llm, tools, talking, busy, events, rx));
-    tx
+pub fn brief(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default();
+    match line.chars().count() > SHOWN {
+        true => line.chars().take(SHOWN).collect::<String>() + "…",
+        false => line.to_string(),
+    }
 }
 
-async fn work(
-    llm: Llm,
-    tools: Arc<Tools>,
-    talking: Arc<AtomicBool>,
-    busy: Arc<AtomicBool>,
-    events: UnboundedSender<Event>,
-    mut rx: UnboundedReceiver<Look>,
-) {
+pub async fn solo(llm: &Llm, tools: Arc<Tools>, system: &str, task: &str, steps: &[String]) -> Result<String> {
     let schema = tools.schema();
-    let system = Message::system(DOER_PROMPT);
-    let mut done: VecDeque<(Instant, String, String)> = VecDeque::new();
-    if let Err(e) = llm.warm_tools(&system, &schema).await {
-        log::debug!("tool prompt warm-up failed: {e:#}");
+    let mut ask = task.to_string();
+    if !steps.is_empty() {
+        let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
+        ask.push_str(&format!("\n\nDo it in these steps:\n{}", plan.join("\n")));
     }
-    let nothing = NOTHING.replace("{abilities}", &tools.abilities());
-    while let Some(mut look) = rx.recv().await {
-        while let Ok(newer) = rx.try_recv() {
-            look = newer;
-        }
-        let Some(latest) = look.lines.pop() else { continue };
-        let mut ask = format!("Local time: {}", look.time);
-        if !look.lines.is_empty() {
-            ask.push_str(&format!("\n\nEarlier in the call:\n{}", look.lines.join("\n")));
-        }
-        let known = memory();
-        if !known.is_empty() {
-            ask.push_str(&format!("\n\nKnown about the person:\n- {}", known.join("\n- ")));
-        }
-        if !done.is_empty() {
-            ask.push_str("\n\nAlready done:");
-            for (at, call, result) in &done {
-                let short: String = result.chars().take(DONE_CHARS).collect();
-                ask.push_str(&format!("\n- {} ago: {call} -> {short}", span(at.elapsed().as_secs())));
+    let mut history = vec![Message::system(system), Message::user(ask)];
+    for _ in 0..ROUNDS {
+        let reply = match llm.act(&computer::compose(&history), &schema).await {
+            Err(e) if format!("{e:#}").contains(" 400") => {
+                computer::blind();
+                llm.act(&computer::compose(&history), &schema).await?
             }
+            other => other?,
+        };
+        if reply.calls.is_empty() {
+            computer::finish(&tools.small, &reply.text, true).await;
+            return Ok(reply.text);
         }
-        ask.push_str(&format!("\n\nThe person's latest message:\n{latest}"));
-        let mut messages = vec![system.clone(), Message::user(ask)];
-        let mut tried: Vec<String> = Vec::new();
-        let mut last: Option<String> = None;
-        let mut report: Option<String> = None;
-        let mut hushed = true;
-        for step in 0..MAX_STEPS {
-            let waited = Instant::now();
-            while talking.load(Relaxed) && waited.elapsed() < YIELD_MAX {
-                tokio::time::sleep(YIELD_POLL).await;
-            }
-            let reply = match llm.act(&messages, &schema).await {
-                Ok(reply) => reply,
-                Err(e) => {
-                    log::warn!("tool step failed: {e:#}");
-                    report =
-                        last.clone().or_else(|| format!("{e:#}").contains("Tool call").then(|| CONFUSED.to_string()));
-                    break;
-                }
-            };
-            if reply.calls.is_empty() {
-                let said = reply.text.trim();
-                let said = said.strip_prefix("thought").unwrap_or(said).trim().trim_matches('"').trim();
-                report = match step {
-                    0 => look.promised.then(|| nothing.clone()),
-                    _ if hushed && !look.promised => None,
-                    _ if said.split_whitespace().count() < 3 || said.eq_ignore_ascii_case("none") => last.clone(),
-                    _ => Some(clip(said)),
-                };
-                break;
-            }
-            let calls: Vec<Call> = reply.calls.into_iter().take(MAX_CALLS).collect();
-            busy.store(true, Relaxed);
-            messages.push(Message::called(&calls));
-            let mut direct = step == 0 && calls.len() == 1;
-            let mut asked = false;
-            for call in &calls {
-                let shown = format!("{} {}", call.name, Value::Object(call.args.clone()));
-                if tools.gated(&call.name) {
-                    let _ = events.send(Event::Doing(shown.clone()));
-                    note(&mut done, shown, ASKED.to_string());
-                    tools.clone().later(call.clone());
-                    asked = true;
-                    continue;
-                }
-                let (text, ok) = if tried.contains(&shown) {
-                    (
-                        "you already tried exactly this and it gave the same result; try something different or finish"
-                            .to_string(),
-                        false,
-                    )
-                } else {
-                    let _ = events.send(Event::Doing(shown.clone()));
-                    let out = tools.run(call).await;
-                    note(&mut done, shown.clone(), out.0.clone());
-                    last = Some(out.0.clone());
-                    out
-                };
-                tried.push(shown);
-                direct &= ok && tools.direct(&call.name);
-                hushed &= ok && tools.quiet(&call.name);
-                messages.push(Message::tool(&call.id, text));
-            }
-            if asked {
-                report = last.clone().or_else(|| (!look.promised).then(|| TURNED.to_string()));
-                break;
-            }
-            if direct || step + 1 == MAX_STEPS {
-                report = if hushed && !look.promised { None } else { last.clone() };
-                break;
-            }
+        shorten(&mut history);
+        history.push(Message::called(reply.text.clone(), &reply.calls));
+        for call in &reply.calls {
+            println!("({} {})", call.name, Value::Object(call.args.clone()));
+            let out = tools.run(call).await;
+            println!("-> {}", brief(&out));
+            history.push(Message::tool(&call.id, out));
         }
-        if let Some(report) = report {
-            let _ = events.send(Event::Aside(report));
-        }
-        busy.store(false, Relaxed);
     }
+    computer::finish(&tools.small, "it ran out of steps", false).await;
+    bail!("it ran out of steps before finishing {task}")
 }

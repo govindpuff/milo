@@ -1,5 +1,6 @@
 mod capture;
 mod computer;
+mod config;
 mod controller;
 mod react;
 mod reply;
@@ -16,12 +17,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use llm::{Llm, Message};
+use llm::Message;
 use phonon::Tts;
 use speech::Speech;
 use voice::{Voice, VoiceConfig};
 
 use crate::capture::AudioClock;
+use crate::config::{Chosen, Config};
 use crate::controller::{Controller, Event, Settings};
 use crate::react::Bank;
 use crate::tts::{Engine, Gate};
@@ -74,65 +76,72 @@ You: [quiet]
 
 const NO_TOOLS: &str = "You have no internet or tools, and what you know may be out of date. Don't invent live facts like scores, news, weather or prices; just say you can't check.";
 
-const WITH_TOOLS: &str = "Your helper:
-- A helper quietly does things on their computer and looks things up while you keep talking, such as: {abilities}. You never do these yourself, you never decide whether they can be done, and you don't know how it went until the helper tells you.
-- When they ask you to do, open, play, pause, close, find, check, write, read or change anything, say you're on it in a few words, like Sure, one sec. or Ooh, let me check. and stop there. Never say that you can't do it, never say it's done, and never make up the outcome: the helper works out whether it can be done and tells you. If a detail is missing, like which city, ask for it instead.
-- If the helper can't do it, it tells you so, and then you tell them. Until then you don't know.
-- A message starting with (result) is the helper telling you how it went, not them speaking. Tell them what it says in a sentence or two, in your own words, and nothing more. What the helper did, you did, so say it as your own doing, like I wrote it, and never guess at how it turned out. When a result quotes what you typed, that is so you know what you wrote: don't read it out unless they ask. If it failed, say so and why in a few words. If they say something didn't happen, believe them.
-- Anything that acts on their computer first asks them on their screen, and nothing happens until they approve it there. When the square brackets at the start of their message say something is waiting for them to approve, it has not happened. If they ask about it or say it didn't work, tell them it's waiting for them to approve it on their screen. Otherwise don't bring it up. When the brackets say you are still working on their computer, that is not finished either, and you will be told when it is.
-- When they tell you something about themselves, just respond like a friend. The helper remembers it without you saying so.
+const WITH_TOOLS: &str = "What you can do:
+- You have tools, and you are the one who uses them. When they ask for something a tool does, or ask a question a tool answers, say a few words first, like Sure, one sec. or Ooh, let me check. and call the tool in the same reply. A request can be casual: can you open chrome, check boston, remind me in five. Being asked whether you can do something is not a request to do it.
+- When the tool answers, tell them how it went in a sentence or two, in your own words: only what they asked for, taken from what the tool said. If it failed, say so and why in a few words. Never say something is done before a tool says so, and never make up an outcome. If none of your tools can do what they asked, tell them plainly that you can't.
+- Fill a tool's arguments only from what they said. If a detail is missing, like which city or who a message is for, ask for it instead of calling the tool. Speech recognition makes small mistakes, so write names out in full: SF is San Francisco.
+- When they tell you a lasting fact about themselves or their life, like their name, where they live, their people and pets, their work, what they like, or a plan, call remember in the same reply and just respond like a friend, without saying that you saved it. Also call it when they ask you to remember, note or write something down. Do not remember small talk, passing moods, questions, or anything you already remember.
+- Some things first ask them on their screen, and do not happen until they approve there. The tool then says that it asked. When the square brackets at the start of their message say something is waiting for them to approve, it has not happened. If they ask about it or say it didn't work, tell them it's waiting for them to approve it on their screen. Otherwise don't bring it up.
+- A message that starts with (result) is not them speaking. It tells you how something you started earlier turned out, like a timer that finished or something they approved on their screen. Tell them in a sentence, or go on with the work it describes. If they say something didn't happen, believe them.
 
-Them: what's the weather like in boston
-You: [easy] Ooh, let me check.
-Them: (result) weather in Boston, Massachusetts: 41°F and light rain right now. Today: rain, high 45, low 36.
-You: [bright] Okay, it's forty-one and drizzling in Boston. High of forty-five, so, bring a jacket.
-Them: can you open spotify
-You: [easy] Yeah, one sec.
-Them: (result) open failed: could not find anything called Spotify to open
-You: [soft] Hmm, I couldn't find Spotify on here.
-Them: can you pause that
-You: [easy] Sure, one sec.
-Them: (result) paused what was playing in the tab Lo-fi beats - YouTube
-You: [easy] Okay, paused.
-Them: can you turn the volume down
-You: [easy] Let me see.
-Them: (result) nothing was done: the helper has no way to do what they asked.
-You: [soft] Ah, turns out I can't do that one.
+{hands}{memory}";
 
-{memory}";
+const HANDS: &str = "Working on their computer:
+- For anything that takes using their apps or their browser, call computer with a short plan. Once it answers, you carry out the plan yourself, one action at a time. You work in one place at a time: a tab in their browser, or the window of an app. A browser tab never needs to be in front.
+- While you work, say nothing. Each reply is one tool call and no words, until you are done or you need something from them. When the plan is done, do not call a tool: tell them in one or two short sentences what you did, or what you found if they asked for information. Take every fact from the screen.
+- If they speak while you work, the work pauses, and nothing more happens until you act again. Go by what they said. If they corrected something, fix it right where you are: when a draft is open and they change a word in it, change that word in that draft. Never start the task over, and never do a second time what is already done. If they said to stop, stop and say so. If it was only a passing remark, answer in a few words and go on with the work in the same reply.
+- Before you send, post, pay for or delete anything, check that the screen shows exactly what they last asked for. What is sent cannot be taken back, so if they corrected you after it went, tell them it already went and ask before sending anything again.
+- After each action you get a picture of the place and a list of what is in it. Lines in the list that start with a number in square brackets are controls you can use. The other lines are text. Trust the list and the picture over what you expect. Numbers change after every action, so only use numbers from the latest list.
+- Do what the plan says and nothing else. Do not add steps of your own.
+- First make sure you are in the right place. computer answers with the apps and the browser tabs that are open, and says which place you are in, if any. When the plan is about something that is already open, like that video, this tab or the page they are on, go to the tab or the app that holds it instead of opening it again. It is usually the place you worked in last, or the one in front. If the place you are in is not where the plan belongs, change place before you do anything else. Never click, type or press keys in a place the plan is not about.
+- go brings up an app by name or a website by address, and makes it the place you work in. An app comes to the front while you work in it. A website opens in a browser window of your own, so their tabs stay as they are. To use a website, go to its address: do not go to the browser by its name, and do not go through a search engine when the plan names the site. When a web address can take you straight to what the plan needs, like a site's search results for some words, go to that address instead of clicking through the site.
+- tab moves you to a browser tab that is already open, by its number in the list of tabs. close_tab with a number closes one. Keys like cmd+t, cmd+l and cmd+w do not reach the browser, so use go, tab and close_tab instead.
+- click presses a control. Give its number from the list. The number in square brackets is where the control is in the list, not what it is called: [5] button \"7\" is control 5, and it is the key 7. To press a control by what it is called, leave the number out and give the exact name as what, like 7 or Multiply. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
+- type types text, into a text field or a text area if you give its number, otherwise where the cursor is. Never give the number of a button or a link to type. Typing into a field replaces what was in it. Typing into a large writing area, like a document or the body of a message, adds to what is there. Set enter to true to press return after the text, which is how a search, an address or a chat message is confirmed. To pick from a pop-up menu that lists its choices, type the choice into it. The result tells you what the control contains afterward.
+- press sends keys, like return, escape, tab, down, cmd+n or cmd+f. scroll moves down or up to show more of a page or a window. look waits a moment and shows the place again, for when something is still loading.
+- read gives you all the text of a web page, including what is off screen. Use it when they want something found or read out and the list does not show all of it.
+- menu picks from an app's menu bar, like File > New Window. In an app it is the surest way to do something there is a menu item for. A web page has no menu bar.
+- Type only when the result of your last action or the list shows that the cursor is in the right place. If typed text went into the wrong place, undo it with cmd+z before you go on.
+- In a save or open sheet of an app, keys do not work. Type the file name into the Save As field by its number, and click the Save button. To choose the folder, click the Where pop-up and pick the folder there. If the folder the plan names is not offered, save where the sheet already is, and tell them which folder the file went to.
+- You work behind their other windows. When they asked to see what you did, it is brought to the front for them after you finish, so never try to do that yourself.
+- The result of each action says what left the place and what is new in it. Read it to see what your action did. When something you meant to remove is listed as gone, that part is done. If an action fails or the screen did not change the way you expected, try another way.
+- computer can answer with notes from earlier work in an app or a site. They say what got things done there before, and what did nothing. Carry out each step the way the notes give for it, and do not try what they say does not work. When the screen shows that a note is wrong, trust the screen.
+- Only work in the app or the site the plan names. If it will not open, stop and say so. Never use a different app in its place.
+- Leave an advertisement, a cookie banner or a request for a donation where it is, and get on with the plan. Close one only when it covers the control you need, and give that one click at most. But when something asks you to allow, approve, confirm, restore, sign in, pay, delete or send something the plan does not cover, do not answer it in any way, not even to cancel it. Stop and tell them what it is asking.
+- Before you type or send anything meant for a person, check that the picture and the list show that person's conversation is the one open, by its name. A name that is merely listed in a sidebar is not open. If the wrong conversation is open or you cannot tell, do not type: open the right one first, or stop and say you could not find it.
+- Before you finish, check that the latest list or picture shows the plan is done. Typing in a search box or seeing a result listed is not the same as having opened it. If you cannot finish after trying, stop and say what got in the way.
+- When they want something found, read or told, and the list or the picture already shows it, you are done: do not click it or open it. Answer from what is shown.
 
-const KEYS: [&str; 2] = ["MILO_LLM_KEY", "OPENAI_API_KEY"];
+";
+
 const STATUS_POLL: Duration = Duration::from_millis(100);
 const WARMUP_TEXT: &str = "Hello there, I'm ready when you are.";
 
 #[derive(Parser)]
 #[command(name = "milo", about = "A local voice assistant for Apple Silicon Macs: talk to it and it talks back.")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     #[arg(
         long,
-        default_value = "gemma-4-26b-qat-4bit",
-        help = "Model to talk with: any name or alias Rapid-MLX can serve, or the model name your --llm-url server expects"
+        value_name = "PROVIDER/MODEL",
+        help = "Model to talk and act with, like openai/gpt-6.2-sol or ollama/qwen3; a name without a provider is served on this Mac by Rapid-MLX [default: the model in config.json, or local/gemma-4-26b-qat-4bit]"
     )]
-    model: String,
+    model: Option<String>,
+    #[arg(
+        long,
+        value_name = "PROVIDER/MODEL",
+        help = "Model that writes the notes about your apps [default: --model]"
+    )]
+    small_model: Option<String>,
+    #[arg(
+        long,
+        value_name = "PROVIDER/MODEL",
+        help = "Model that finds things in pictures of the screen [default: --model]"
+    )]
+    vision_model: Option<String>,
     #[arg(long, default_value_t = 8000, help = "Port for Rapid-MLX; a server already running there is used as is")]
     port: u16,
-    #[arg(
-        long,
-        help = "Use any OpenAI-compatible server at this base URL instead of starting Rapid-MLX; an API key is read from MILO_LLM_KEY or OPENAI_API_KEY [default: http://127.0.0.1:{port}/v1]"
-    )]
-    llm_url: Option<String>,
-    #[arg(
-        long,
-        default_value = "chat",
-        value_parser = ["chat", "responses"],
-        hide_possible_values = true,
-        help = "API of the --llm-url server: chat (chat completions) or responses (the OpenAI Responses API)"
-    )]
-    llm_api: String,
-    #[arg(long, value_name = "EFFORT", help = "Reasoning effort to ask the --llm-url server for, such as none or low")]
-    llm_effort: Option<String>,
-    #[arg(long, value_name = "TIER", help = "Service tier to ask the --llm-url server for, such as priority")]
-    llm_tier: Option<String>,
     #[arg(
         long,
         default_value = "breeze",
@@ -185,6 +194,75 @@ struct Args {
     step: Vec<String>,
 }
 
+#[derive(clap::Subcommand)]
+enum Command {
+    #[command(about = "Save the API key of a provider, like openai or anthropic")]
+    Auth { provider: String },
+    #[command(about = "List the providers, or the models that one provider offers")]
+    Models { provider: Option<String> },
+}
+
+struct Models {
+    main: Chosen,
+    small: Chosen,
+    vision: Chosen,
+}
+
+impl Models {
+    fn pick(args: &Args) -> Result<Models> {
+        let config = Config::load()?;
+        let main = args.model.clone().or_else(|| config.named("model")).unwrap_or_else(|| config::DEFAULT.to_string());
+        let small = args.small_model.clone().or_else(|| config.named("small_model")).unwrap_or_else(|| main.clone());
+        let vision = args.vision_model.clone().or_else(|| config.named("vision_model")).unwrap_or_else(|| main.clone());
+        let models = Models {
+            main: config.chosen(&main, args.port)?,
+            small: config.chosen(&small, args.port)?,
+            vision: config.chosen(&vision, args.port)?,
+        };
+        let mut local: Vec<&str> =
+            [&models.main, &models.small, &models.vision].iter().filter_map(|m| m.local.as_deref()).collect();
+        local.dedup();
+        if local.len() > 1 {
+            anyhow::bail!(
+                "Rapid-MLX serves one model at a time, so the models from {} have to be the same one: {}",
+                config::LOCAL,
+                local.join(", ")
+            );
+        }
+        if !models.main.pictures {
+            computer::blind();
+        }
+        log::info!("talking with {}", models.main.name);
+        if models.small.name != models.main.name || models.vision.name != models.main.name {
+            log::info!("notes by {}, pictures by {}", models.small.name, models.vision.name);
+        }
+        Ok(models)
+    }
+
+    fn serve(&self, port: u16) -> Result<Option<llm::server::ServerGuard>> {
+        match [&self.main, &self.small, &self.vision].iter().find_map(|m| m.local.as_deref()) {
+            Some(model) => llm::server::ensure_running(model, port),
+            None => Ok(None),
+        }
+    }
+}
+
+fn prompt(args: &Args, tools: Option<&tools::Tools>, sounds: &[&str]) -> Result<String> {
+    let system = match &args.system_prompt {
+        Some(path) => {
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?.trim().to_string()
+        }
+        None => SYSTEM_PROMPT.to_string(),
+    };
+    let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
+    let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
+    let section = match tools {
+        Some(tools) => WITH_TOOLS.replace("{hands}", if tools.hands() { HANDS } else { "" }),
+        None => NO_TOOLS.to_string(),
+    };
+    Ok(system.replace("{sounds}", &listed).replace("{tools}", &section))
+}
+
 async fn status(talking: Arc<AtomicBool>, busy: Arc<AtomicBool>) {
     let mut last = "";
     loop {
@@ -216,6 +294,11 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    match &args.command {
+        Some(Command::Auth { provider }) => return config::auth(provider),
+        Some(Command::Models { provider }) => return config::models(provider.as_deref(), args.port),
+        None => {}
+    }
     if let Some(task) = args.task.clone() {
         return solo(args, &task);
     }
@@ -238,32 +321,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn host(args: &Args) -> llm::Host {
-    if args.llm_url.is_none() {
-        return llm::Host::default();
-    }
-    let key = KEYS
-        .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .map(|key| key.trim().to_string())
-        .find(|key| !key.is_empty());
-    llm::Host {
-        key,
-        responses: args.llm_api == "responses",
-        effort: args.llm_effort.clone(),
-        tier: args.llm_tier.clone(),
-    }
-}
-
 fn solo(args: Args, task: &str) -> Result<()> {
-    let base_url = args.llm_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}/v1", args.port));
-    let server = match args.llm_url {
-        Some(_) => None,
-        None => llm::server::ensure_running(&args.model, args.port)?,
-    };
-    let llm = Llm::new(&base_url, &args.model, host(&args));
+    let models = Models::pick(&args)?;
+    let server = models.serve(args.port)?;
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    let out = rt.block_on(computer::solo(&llm, task, &args.step));
+    let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();
+    let tools = Arc::new(tools::Tools::load(events, models.vision.llm.clone(), models.small.llm.clone(), true));
+    let system = prompt(&args, Some(&tools), &[])?.replace("{memory}", &tools::memory_section());
+    let out = rt.block_on(async {
+        tokio::spawn(async move { while seen.recv().await.is_some() {} });
+        tools::solo(&models.main.llm, tools, &system, task, &args.step).await
+    });
     drop(server);
     println!("{}", out?);
     Ok(())
@@ -271,16 +339,10 @@ fn solo(args: Args, task: &str) -> Result<()> {
 
 fn run(args: Args) -> Result<()> {
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    let system = match &args.system_prompt {
-        Some(path) => {
-            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?.trim().to_string()
-        }
-        None => SYSTEM_PROMPT.to_string(),
-    };
+    let models = Models::pick(&args)?;
 
     log::info!("loading speech, tts and llm (first run downloads and compiles models, this can take a few minutes)");
     let aec = !args.no_aec;
-    let base_url = args.llm_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}/v1", args.port));
 
     let (cleaned_tx, cleaned_rx) = if aec {
         let (tx, rx) = std::sync::mpsc::channel::<Vec<f32>>();
@@ -290,10 +352,7 @@ fn run(args: Args) -> Result<()> {
     };
 
     let (server, speech, engine) = thread::scope(|s| {
-        let server = s.spawn(|| match args.llm_url {
-            Some(_) => Ok(None),
-            None => llm::server::ensure_running(&args.model, args.port),
-        });
+        let server = s.spawn(|| models.serve(args.port));
         let tx = events_tx.clone();
         let speech = s.spawn(move || {
             let t = Instant::now();
@@ -366,34 +425,33 @@ fn run(args: Args) -> Result<()> {
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    let llm = Llm::new(&base_url, &args.model, host(&args));
-    let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
-    let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
+    let llm = models.main.llm.clone();
     let talking = Arc::new(AtomicBool::new(false));
-    let tools = (!args.no_tools).then(|| Arc::new(tools::Tools::load(events_tx.clone(), llm.clone(), talking.clone())));
-    let section = match &tools {
-        Some(tools) => WITH_TOOLS.replace("{abilities}", &tools.abilities()),
-        None => NO_TOOLS.to_string(),
-    };
-    let system = system.replace("{sounds}", &listed).replace("{tools}", &section);
+    let tools = (!args.no_tools).then(|| {
+        Arc::new(tools::Tools::load(
+            events_tx.clone(),
+            models.vision.llm.clone(),
+            models.small.llm.clone(),
+            notch::on(),
+        ))
+    });
+    let schema = tools.as_ref().map(|tools| Arc::new(tools.schema()));
+    let system = prompt(&args, tools.as_deref(), sounds)?;
     let remembers = tools.is_some() && system.contains("{memory}");
     let history = vec![Message::system(system.replace("{memory}", &tools::memory_section()))];
     rt.block_on(async {
-        if let Err(e) = llm.warm(&history).await {
+        if let Err(e) = llm.warm(&history, schema.as_deref()).await {
             log::warn!("llm warm-up failed: {e:#}");
         }
     });
 
     let busy = Arc::new(AtomicBool::new(false));
-    let hands = tools.map(|tools| {
-        let _rt = rt.enter();
-        tools::spawn(llm.clone(), tools, talking.clone(), busy.clone(), events_tx.clone())
-    });
+    let hands = tools.as_ref().is_some_and(|tools| tools.hands());
 
     if notch::on() {
         let _rt = rt.enter();
         tokio::spawn(status(talking.clone(), busy.clone()));
-        if hands.is_some() {
+        if hands {
             tokio::spawn(computer::warm());
         }
         if args.push_to_talk {
@@ -415,7 +473,9 @@ fn run(args: Args) -> Result<()> {
             backchannel: !args.no_backchannel,
             yielding: args.no_aec,
             sounds,
-            hands,
+            tools,
+            schema,
+            listening: Arc::new(AtomicBool::new(false)),
             talking,
             busy,
             system: remembers.then_some(system),

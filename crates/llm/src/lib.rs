@@ -10,7 +10,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use bytes::Bytes;
 use futures_core::Stream;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde_json::{Map, Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,7 +27,7 @@ pub struct Message {
     pub role: Role,
     pub content: String,
     pub image: Option<String>,
-    tool_calls: Option<serde_json::Value>,
+    tool_calls: Option<Value>,
     tool_call_id: Option<String>,
 }
 
@@ -38,7 +39,7 @@ impl Serialize for Message {
         match &self.image {
             Some(image) => map.serialize_entry(
                 "content",
-                &serde_json::json!([
+                &json!([
                     { "type": "text", "text": self.content },
                     { "type": "image_url", "image_url": { "url": format!("data:image/jpeg;base64,{image}") } },
                 ]),
@@ -60,28 +61,35 @@ impl Message {
         Self { role, content: content.into(), image: None, tool_calls: None, tool_call_id: None }
     }
 
-    pub fn called(calls: &[Call]) -> Self {
-        let list: Vec<serde_json::Value> = calls
+    pub fn called(content: impl Into<String>, calls: &[Call]) -> Self {
+        let list: Vec<Value> = calls
             .iter()
             .map(|c| {
-                serde_json::json!({
+                json!({
                     "id": c.id,
                     "type": "function",
-                    "function": { "name": c.name, "arguments": serde_json::Value::Object(c.args.clone()).to_string() },
+                    "function": { "name": c.name, "arguments": Value::Object(c.args.clone()).to_string() },
                 })
             })
             .collect();
-        Self { tool_calls: Some(list.into()), ..Self::new(Role::Assistant, "") }
+        Self { tool_calls: Some(list.into()), ..Self::new(Role::Assistant, content) }
     }
 
-    fn items(&self, out: &mut Vec<serde_json::Value>) {
+    pub fn answers(&self) -> Option<&str> {
+        self.tool_call_id.as_deref()
+    }
+
+    fn items(&self, out: &mut Vec<Value>) {
         if let Some(id) = &self.tool_call_id {
-            out.push(serde_json::json!({ "type": "function_call_output", "call_id": id, "output": self.content }));
+            out.push(json!({ "type": "function_call_output", "call_id": id, "output": self.content }));
             return;
         }
         if let Some(calls) = &self.tool_calls {
+            if !self.content.trim().is_empty() {
+                out.push(json!({ "role": self.role, "content": self.content }));
+            }
             for call in calls.as_array().into_iter().flatten() {
-                out.push(serde_json::json!({
+                out.push(json!({
                     "type": "function_call",
                     "call_id": call["id"],
                     "name": call["function"]["name"],
@@ -91,13 +99,13 @@ impl Message {
             return;
         }
         let content = match &self.image {
-            Some(image) => serde_json::json!([
+            Some(image) => json!([
                 { "type": "input_text", "text": self.content },
                 { "type": "input_image", "image_url": format!("data:image/jpeg;base64,{image}") },
             ]),
             None => self.content.clone().into(),
         };
-        out.push(serde_json::json!({ "role": self.role, "content": content }));
+        out.push(json!({ "role": self.role, "content": content }));
     }
 
     pub fn tool(id: &str, content: impl Into<String>) -> Self {
@@ -121,12 +129,21 @@ impl Message {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Api {
+    #[default]
+    Chat,
+    Responses,
+}
+
 #[derive(Clone, Default)]
 pub struct Host {
     pub key: Option<String>,
-    pub responses: bool,
-    pub effort: Option<String>,
-    pub tier: Option<String>,
+    pub api: Api,
+    pub rapid: bool,
+    pub limit: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub options: Map<String, Value>,
 }
 
 #[derive(Clone)]
@@ -141,49 +158,6 @@ struct Inner {
     host: Host,
 }
 
-#[derive(Serialize)]
-struct ChatRequest<'a> {
-    model: &'a str,
-    messages: &'a [Message],
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chat_template_kwargs: Option<TemplateKwargs>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service_tier: Option<&'a str>,
-}
-
-#[derive(Serialize)]
-struct TemplateKwargs {
-    enable_thinking: bool,
-}
-
-#[derive(Serialize)]
-struct ActRequest<'a> {
-    model: &'a str,
-    messages: &'a [Message],
-    tools: &'a serde_json::Value,
-    tool_choice: &'static str,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chat_template_kwargs: Option<TemplateKwargs>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service_tier: Option<&'a str>,
-}
-
 #[derive(Clone, Debug)]
 pub struct Reply {
     pub calls: Vec<Call>,
@@ -194,7 +168,13 @@ pub struct Reply {
 pub struct Call {
     pub id: String,
     pub name: String,
-    pub args: serde_json::Map<String, serde_json::Value>,
+    pub args: Map<String, Value>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Piece {
+    Text(String),
+    Calls(Vec<Call>),
 }
 
 #[derive(Serialize)]
@@ -202,7 +182,7 @@ struct PrefillRequest<'a> {
     kind: &'static str,
     messages: &'a [Message],
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<&'a serde_json::Value>,
+    tools: Option<&'a Value>,
     enable_thinking: bool,
 }
 
@@ -212,267 +192,193 @@ impl Llm {
             .no_proxy()
             .tcp_nodelay(true)
             .pool_idle_timeout(Duration::from_secs(25))
-            .connect_timeout(if host.key.is_some() { FAR } else { NEAR })
+            .connect_timeout(if host.rapid { NEAR } else { FAR })
             .build()
             .expect("reqwest client");
         let base = base_url.trim_end_matches('/').to_string();
         Llm { inner: Arc::new(Inner { model: model.to_string(), http, base, host }) }
     }
 
-    fn hosted(&self) -> bool {
-        self.inner.host.key.is_some()
+    pub fn model(&self) -> &str {
+        &self.inner.model
+    }
+
+    fn rapid(&self) -> bool {
+        self.inner.host.rapid
+    }
+
+    fn send(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let req = match &self.inner.host.key {
+            Some(key) => req.bearer_auth(key),
+            None => req,
+        };
+        self.inner.host.headers.iter().fold(req, |req, (name, value)| req.header(name, value))
     }
 
     fn post(&self, path: &str) -> reqwest::RequestBuilder {
-        let req = self.inner.http.post(format!("{}/{path}", self.inner.base));
-        match &self.inner.host.key {
-            Some(key) => req.bearer_auth(key),
-            None => req,
-        }
+        self.send(self.inner.http.post(format!("{}/{path}", self.inner.base)))
     }
 
-    fn local(&self, tokens: u32) -> Option<u32> {
-        (!self.hosted()).then_some(tokens)
-    }
-
-    fn remote(&self, tokens: u32) -> Option<u32> {
-        self.hosted().then_some(tokens.max(LEAST))
-    }
-
-    fn kwargs(&self) -> Option<TemplateKwargs> {
-        (!self.hosted()).then_some(TemplateKwargs { enable_thinking: false })
-    }
-
-    fn effort(&self) -> Option<&str> {
-        self.inner.host.effort.as_deref().filter(|_| self.hosted())
-    }
-
-    fn tier(&self) -> Option<&str> {
-        self.inner.host.tier.as_deref().filter(|_| self.hosted())
-    }
-
-    fn body(
-        &self,
-        messages: &[Message],
-        tools: Option<&serde_json::Value>,
-        stream: bool,
-        tokens: u32,
-    ) -> serde_json::Value {
-        let mut input = Vec::new();
-        for message in messages {
-            message.items(&mut input);
-        }
-        let mut body = serde_json::json!({
-            "model": self.inner.model,
-            "input": input,
-            "stream": stream,
-            "store": false,
-            "max_output_tokens": tokens + ROOM,
-        });
-        if let Some(tools) = tools {
-            body["tools"] = flat(tools);
-            body["tool_choice"] = "auto".into();
-        }
-        if let Some(effort) = self.effort() {
-            body["reasoning"] = serde_json::json!({ "effort": effort });
-        }
-        if let Some(tier) = self.tier() {
-            body["service_tier"] = tier.into();
+    fn merged(&self, mut body: Value) -> Value {
+        if let Some(fields) = body.as_object_mut() {
+            for (key, value) in &self.inner.host.options {
+                match value {
+                    Value::Null => fields.remove(key),
+                    value => fields.insert(key.clone(), value.clone()),
+                };
+            }
         }
         body
     }
 
-    async fn respond(&self, messages: &[Message], tools: Option<&serde_json::Value>, tokens: u32) -> Result<Reply> {
-        let resp = self
-            .post("responses")
-            .timeout(ACT_TIMEOUT)
-            .json(&self.body(messages, tools, false, tokens))
-            .send()
-            .await
-            .context("responses request")?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("responses request {status}: {body}");
-        }
-        let body: serde_json::Value = serde_json::from_str(&body).context("responses reply")?;
-        let mut calls = Vec::new();
-        let mut text = String::new();
-        for item in body["output"].as_array().into_iter().flatten() {
-            match item["type"].as_str() {
-                Some("function_call") => {
-                    if let Some(mut call) = parse_call(&item["name"], &item["arguments"]) {
-                        call.id = item["call_id"].as_str().unwrap_or_default().to_string();
-                        calls.push(call);
-                    }
-                }
-                Some("message") => {
-                    for part in item["content"].as_array().into_iter().flatten() {
-                        text.push_str(part["text"].as_str().unwrap_or_default());
-                    }
-                }
-                _ => {}
+    fn body(&self, messages: &[Message], tools: Option<&Value>, stream: bool, tokens: u32, heat: f32) -> Value {
+        if self.inner.host.api == Api::Responses {
+            let mut input = Vec::new();
+            for message in messages {
+                message.items(&mut input);
             }
-        }
-        for (i, call) in calls.iter_mut().enumerate() {
-            if call.id.is_empty() {
-                call.id = format!("call_{i}");
+            let mut body = json!({
+                "model": self.inner.model,
+                "input": input,
+                "stream": stream,
+                "store": false,
+                "max_output_tokens": tokens + ROOM,
+            });
+            if let Some(tools) = tools {
+                body["tools"] = flat(tools);
+                body["tool_choice"] = "auto".into();
             }
+            return self.merged(body);
         }
-        Ok(Reply { calls, text: text.trim().to_string() })
+        let mut body = json!({
+            "model": self.inner.model,
+            "messages": messages,
+            "stream": stream,
+            "temperature": heat,
+        });
+        match (self.rapid(), &self.inner.host.limit) {
+            (true, _) => {
+                body["max_tokens"] = tokens.into();
+                body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+            }
+            (false, Some(limit)) => body[limit.as_str()] = (tokens + ROOM).into(),
+            (false, None) => body["max_tokens"] = (tokens + ROOM).into(),
+        }
+        if let Some(tools) = tools {
+            body["tools"] = tools.clone();
+            body["tool_choice"] = "auto".into();
+        }
+        self.merged(body)
     }
 
-    fn chat_request<'a>(&'a self, messages: &'a [Message], stream: bool, max_tokens: u32) -> ChatRequest<'a> {
-        ChatRequest {
-            model: &self.inner.model,
-            messages,
-            stream,
-            max_tokens: self.local(max_tokens),
-            max_completion_tokens: self.remote(max_tokens),
-            temperature: TEMPERATURE,
-            chat_template_kwargs: self.kwargs(),
-            reasoning_effort: self.effort(),
-            service_tier: self.tier(),
+    fn path(&self) -> &'static str {
+        match self.inner.host.api {
+            Api::Responses => "responses",
+            Api::Chat => "chat/completions",
         }
     }
 
     pub async fn stream(
         &self,
         messages: &[Message],
-    ) -> Result<impl Stream<Item = Result<String>> + Send + Unpin + use<>> {
-        let events = self.inner.host.responses;
-        let send = match events {
-            true => self.post("responses").json(&self.body(messages, None, true, REPLY_TOKENS)),
-            false => self.post("chat/completions").json(&self.chat_request(messages, true, REPLY_TOKENS)),
-        };
-        let resp = send.send().await.context("chat completions request")?;
+        tools: Option<&Value>,
+    ) -> Result<impl Stream<Item = Result<Piece>> + Send + Unpin + use<>> {
+        self.open(messages, tools, REPLY_TOKENS, TEMPERATURE, false).await
+    }
+
+    async fn open(
+        &self,
+        messages: &[Message],
+        tools: Option<&Value>,
+        tokens: u32,
+        heat: f32,
+        quiet: bool,
+    ) -> Result<ChatStream> {
+        let mut send = self.post(self.path()).json(&self.body(messages, tools, true, tokens, heat));
+        if quiet && self.rapid() {
+            send = send.header("X-Rapid-Priority", "background");
+        }
+        let resp = send.send().await.with_context(|| format!("request to {}", self.inner.base))?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            bail!("chat completions {status}: {body}");
+            bail!("{} answered {status}: {body}", self.inner.model);
         }
         Ok(ChatStream {
             body: Box::pin(resp.bytes_stream()),
             buf: Vec::new(),
             out: VecDeque::new(),
+            calls: Vec::new(),
             ended: false,
             done: false,
             id: None,
             http: self.inner.http.clone(),
-            base: (!self.hosted()).then(|| self.inner.base.clone()),
-            events,
+            base: self.rapid().then(|| self.inner.base.clone()),
+            events: self.inner.host.api == Api::Responses,
         })
+    }
+
+    async fn collect(&self, messages: &[Message], tools: Option<&Value>, tokens: u32) -> Result<Reply> {
+        let gather = async {
+            let mut stream = self.open(messages, tools, tokens, 0.0, true).await?;
+            let mut reply = Reply { calls: Vec::new(), text: String::new() };
+            while let Some(piece) = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await {
+                match piece? {
+                    Piece::Text(text) => reply.text.push_str(&text),
+                    Piece::Calls(calls) => reply.calls.extend(calls),
+                }
+            }
+            Ok::<Reply, anyhow::Error>(reply)
+        };
+        let mut reply = tokio::time::timeout(ACT_TIMEOUT, gather).await.map_err(|_| anyhow!("it took too long"))??;
+        reply.text = reply.text.trim().to_string();
+        if reply.calls.is_empty() {
+            reply.calls = inline_calls(&reply.text);
+        }
+        Ok(reply)
     }
 
     pub async fn see(&self, question: &str, image: &str) -> Result<String> {
         let messages = [Message::seen(question, Some(image.to_string()))];
-        if self.inner.host.responses {
-            return Ok(self.respond(&messages, None, SEE_TOKENS).await?.text);
-        }
-        let mut req = self.chat_request(&messages, false, SEE_TOKENS);
-        req.temperature = 0.0;
-        let resp = self
-            .post("chat/completions")
-            .header("X-Rapid-Priority", "background")
-            .timeout(ACT_TIMEOUT)
-            .json(&req)
-            .send()
-            .await
-            .context("picture request")?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("picture request {status}: {body}");
-        }
-        let body: serde_json::Value = serde_json::from_str(&body).context("picture response")?;
-        Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_string())
+        Ok(self.collect(&messages, None, SEE_TOKENS).await?.text)
     }
 
     pub async fn write(&self, messages: &[Message]) -> Result<String> {
-        if self.inner.host.responses {
-            return Ok(self.respond(messages, None, WRITE_TOKENS).await?.text);
-        }
-        let mut req = self.chat_request(messages, false, WRITE_TOKENS);
-        req.temperature = 0.0;
-        let resp = self
-            .post("chat/completions")
-            .header("X-Rapid-Priority", "background")
-            .timeout(ACT_TIMEOUT)
-            .json(&req)
-            .send()
-            .await
-            .context("text request")?;
+        Ok(self.collect(messages, None, WRITE_TOKENS).await?.text)
+    }
+
+    pub async fn act(&self, messages: &[Message], tools: &Value) -> Result<Reply> {
+        self.collect(messages, Some(tools), REPLY_TOKENS).await
+    }
+
+    pub async fn models(&self) -> Result<Vec<String>> {
+        let req = self.send(self.inner.http.get(format!("{}/models", self.inner.base))).timeout(LIST_TIMEOUT);
+        let resp = req.send().await.with_context(|| format!("request to {}", self.inner.base))?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("text request {status}: {body}");
+            bail!("{} answered {status}: {body}", self.inner.base);
         }
-        let body: serde_json::Value = serde_json::from_str(&body).context("text response")?;
-        Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_string())
+        let body: Value = serde_json::from_str(&body).context("list of models")?;
+        let list = body["data"].as_array().or_else(|| body["models"].as_array());
+        let mut names: Vec<String> = list
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model["id"].as_str().or_else(|| model["name"].as_str()))
+            .map(str::to_string)
+            .collect();
+        names.sort();
+        Ok(names)
     }
 
-    pub async fn act(&self, messages: &[Message], tools: &serde_json::Value) -> Result<Reply> {
-        if self.inner.host.responses {
-            return self.respond(messages, Some(tools), ACT_TOKENS).await;
-        }
-        let req = ActRequest {
-            model: &self.inner.model,
-            messages,
-            tools,
-            tool_choice: "auto",
-            stream: false,
-            max_tokens: self.local(ACT_TOKENS),
-            max_completion_tokens: self.remote(ACT_TOKENS),
-            temperature: 0.0,
-            chat_template_kwargs: self.kwargs(),
-            reasoning_effort: self.effort(),
-            service_tier: self.tier(),
-        };
-        let resp = self
-            .post("chat/completions")
-            .header("X-Rapid-Priority", "background")
-            .timeout(ACT_TIMEOUT)
-            .json(&req)
-            .send()
-            .await
-            .context("tool request")?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("tool request {status}: {body}");
-        }
-        let body: serde_json::Value = serde_json::from_str(&body).context("tool response")?;
-        let message = &body["choices"][0]["message"];
-        let mut calls = Vec::new();
-        for call in message["tool_calls"].as_array().into_iter().flatten() {
-            let f = &call["function"];
-            if let Some(mut c) = parse_call(&f["name"], &f["arguments"]) {
-                if let Some(id) = call["id"].as_str() {
-                    c.id = id.to_string();
-                }
-                calls.push(c);
-            }
-        }
-        let text = message["content"].as_str().unwrap_or("").trim().to_string();
-        if calls.is_empty() {
-            calls = inline_calls(&text);
-        }
-        for (i, c) in calls.iter_mut().enumerate() {
-            if c.id.is_empty() {
-                c.id = format!("call_{i}");
-            }
-        }
-        Ok(Reply { calls, text })
-    }
-
-    pub async fn warm(&self, messages: &[Message]) -> Result<()> {
-        if self.hosted() {
+    pub async fn warm(&self, messages: &[Message], tools: Option<&Value>) -> Result<()> {
+        if !self.rapid() {
             return Ok(());
         }
         if let [m] = messages
             && m.role == Role::System
         {
-            match self.prefill_prefix(messages, None).await {
+            match self.prefill_prefix(messages, tools).await {
                 Ok(()) => return Ok(()),
                 Err(e) => log::debug!("prefix prefill unavailable, warming via chat: {e:#}"),
             }
@@ -485,7 +391,7 @@ impl Llm {
                 &owned
             }
         };
-        let req = self.chat_request(messages, false, 1);
+        let req = self.body(messages, tools, false, 1, TEMPERATURE);
         let resp = self.post("chat/completions").json(&req).send().await.context("warm request")?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -495,14 +401,7 @@ impl Llm {
         Ok(())
     }
 
-    pub async fn warm_tools(&self, system: &Message, tools: &serde_json::Value) -> Result<()> {
-        self.prefill_prefix(std::slice::from_ref(system), Some(tools)).await
-    }
-
-    async fn prefill_prefix(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<()> {
-        if self.hosted() {
-            return Ok(());
-        }
+    async fn prefill_prefix(&self, messages: &[Message], tools: Option<&Value>) -> Result<()> {
         let req = PrefillRequest { kind: "prefix", messages, tools, enable_thinking: false };
         let resp = self.inner.http.post(format!("{}/cache/prefill", self.inner.base)).json(&req).send().await?;
         let status = resp.status();
@@ -517,23 +416,22 @@ impl Llm {
 
 const REPLY_TOKENS: u32 = 1200;
 const TEMPERATURE: f32 = 0.7;
-const ACT_TOKENS: u32 = 320;
 const SEE_TOKENS: u32 = 140;
 const WRITE_TOKENS: u32 = 500;
 const ACT_TIMEOUT: Duration = Duration::from_secs(60);
+const LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const NEAR: Duration = Duration::from_secs(2);
 const FAR: Duration = Duration::from_secs(10);
-const LEAST: u32 = 16;
 const ROOM: u32 = 4000;
 
-fn flat(tools: &serde_json::Value) -> serde_json::Value {
+fn flat(tools: &Value) -> Value {
     tools
         .as_array()
         .into_iter()
         .flatten()
         .map(|tool| {
             let f = &tool["function"];
-            serde_json::json!({
+            json!({
                 "type": "function",
                 "name": f["name"],
                 "description": f["description"],
@@ -544,28 +442,29 @@ fn flat(tools: &serde_json::Value) -> serde_json::Value {
         .collect()
 }
 
-fn parse_call(name: &serde_json::Value, args: &serde_json::Value) -> Option<Call> {
+fn parse_call(name: &Value, args: &Value) -> Option<Call> {
     let name = name.as_str()?.trim();
     if name.is_empty() {
         return None;
     }
     let args = match args {
-        serde_json::Value::Object(m) => m.clone(),
-        serde_json::Value::String(s) => serde_json::from_str(s).unwrap_or_default(),
+        Value::Object(m) => m.clone(),
+        Value::String(s) => serde_json::from_str(s).unwrap_or_default(),
         _ => Default::default(),
     };
     Some(Call { id: String::new(), name: name.to_string(), args })
 }
 
-fn inline_calls(text: &str) -> Vec<Call> {
+pub fn inline_calls(text: &str) -> Vec<Call> {
     let mut calls = Vec::new();
     let mut rest = text;
     while let Some(at) = rest.find("<tool_call>") {
         let after = &rest[at + "<tool_call>".len()..];
         let end = after.find("</tool_call>").unwrap_or(after.len());
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(after[..end].trim())
-            && let Some(c) = parse_call(&v["name"], &v["arguments"])
+        if let Ok(v) = serde_json::from_str::<Value>(after[..end].trim())
+            && let Some(mut c) = parse_call(&v["name"], &v["arguments"])
         {
+            c.id = format!("call_{}", calls.len());
             calls.push(c);
         }
         rest = &after[end..];
@@ -573,29 +472,17 @@ fn inline_calls(text: &str) -> Vec<Call> {
     calls
 }
 
-#[derive(Deserialize)]
-struct Chunk {
-    id: Option<String>,
-    #[serde(default)]
-    choices: Vec<Choice>,
-    error: Option<serde_json::Value>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    delta: Option<Delta>,
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Delta {
-    content: Option<String>,
+struct Partial {
+    id: String,
+    name: String,
+    args: String,
 }
 
 struct ChatStream {
     body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
     buf: Vec<u8>,
-    out: VecDeque<Result<String>>,
+    out: VecDeque<Result<Piece>>,
+    calls: Vec<Partial>,
     ended: bool,
     done: bool,
     id: Option<String>,
@@ -617,6 +504,69 @@ impl ChatStream {
         self.buf = buf;
     }
 
+    fn fail(&mut self, what: &Value) {
+        self.done = true;
+        self.ended = true;
+        self.calls.clear();
+        self.out.push_back(Err(anyhow!("server error: {what}")));
+    }
+
+    fn close(&mut self) {
+        self.done = true;
+        let mut calls = Vec::new();
+        for (i, held) in self.calls.drain(..).enumerate() {
+            if let Some(mut call) = parse_call(&Value::String(held.name), &Value::String(held.args)) {
+                call.id = if held.id.is_empty() { format!("call_{i}") } else { held.id };
+                calls.push(call);
+            }
+        }
+        if !calls.is_empty() {
+            self.out.push_back(Ok(Piece::Calls(calls)));
+        }
+    }
+
+    fn event(&mut self, event: &Value) {
+        match event["type"].as_str() {
+            Some("response.output_text.delta") => {
+                if let Some(text) = event["delta"].as_str().filter(|text| !text.is_empty()) {
+                    self.out.push_back(Ok(Piece::Text(text.to_string())));
+                }
+            }
+            Some("response.output_item.done") if event["item"]["type"] == "function_call" => {
+                let item = &event["item"];
+                let field = |key: &str| item[key].as_str().unwrap_or_default().to_string();
+                self.calls.push(Partial { id: field("call_id"), name: field("name"), args: field("arguments") });
+            }
+            Some("response.completed" | "response.incomplete") => self.close(),
+            Some("error" | "response.failed") => self.fail(event),
+            _ => {}
+        }
+    }
+
+    fn delta(&mut self, call: &Value) {
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_string();
+        let id = text(&call["id"]);
+        let at = match call["index"].as_u64() {
+            Some(index) => index as usize,
+            None if !id.is_empty() && self.calls.last().is_none_or(|last| last.id != id) => self.calls.len(),
+            None => self.calls.len().saturating_sub(1),
+        };
+        while self.calls.len() <= at {
+            self.calls.push(Partial { id: String::new(), name: String::new(), args: String::new() });
+        }
+        let held = &mut self.calls[at];
+        if !id.is_empty() {
+            held.id = id;
+        }
+        let f = &call["function"];
+        held.name.push_str(f["name"].as_str().unwrap_or_default());
+        match &f["arguments"] {
+            Value::String(part) => held.args.push_str(part),
+            Value::Object(whole) => held.args = Value::Object(whole.clone()).to_string(),
+            _ => {}
+        }
+    }
+
     fn line(&mut self, line: &[u8]) {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         let Some(data) = line.strip_prefix(b"data:") else {
@@ -624,58 +574,41 @@ impl ChatStream {
         };
         let data = data.strip_prefix(b" ").unwrap_or(data);
         if data == b"[DONE]" {
-            self.done = true;
+            self.close();
             return;
         }
-        if self.events {
-            let Ok(event) = serde_json::from_slice::<serde_json::Value>(data) else { return };
-            match event["type"].as_str() {
-                Some("response.output_text.delta") => {
-                    if let Some(text) = event["delta"].as_str().filter(|text| !text.is_empty()) {
-                        self.out.push_back(Ok(text.to_string()));
-                    }
-                }
-                Some("response.completed" | "response.incomplete") => self.done = true,
-                Some("error" | "response.failed") => {
-                    self.done = true;
-                    self.ended = true;
-                    self.out.push_back(Err(anyhow!("server error: {event}")));
-                }
-                _ => {}
-            }
+        let Ok(chunk) = serde_json::from_slice::<Value>(data) else {
+            log::warn!("unparseable SSE data: {}", String::from_utf8_lossy(data));
             return;
-        }
-        let chunk: Chunk = match serde_json::from_slice(data) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("unparseable SSE data ({e}): {}", String::from_utf8_lossy(data));
-                return;
-            }
         };
-        if let Some(err) = chunk.error {
-            self.done = true;
-            self.ended = true;
-            self.out.push_back(Err(anyhow!("server error: {err}")));
+        if self.events {
+            self.event(&chunk);
+            return;
+        }
+        if !chunk["error"].is_null() {
+            self.fail(&chunk["error"]);
             return;
         }
         if self.id.is_none() {
-            self.id = chunk.id;
+            self.id = chunk["id"].as_str().map(str::to_string);
         }
-        for choice in chunk.choices {
-            if let Some(text) = choice.delta.and_then(|d| d.content)
-                && !text.is_empty()
-            {
-                self.out.push_back(Ok(text));
+        for choice in chunk["choices"].as_array().into_iter().flatten() {
+            let delta = &choice["delta"];
+            if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
+                self.out.push_back(Ok(Piece::Text(text.to_string())));
             }
-            if choice.finish_reason.is_some() {
-                self.done = true;
+            for call in delta["tool_calls"].as_array().into_iter().flatten() {
+                self.delta(call);
+            }
+            if !choice["finish_reason"].is_null() {
+                self.close();
             }
         }
     }
 }
 
 impl Stream for ChatStream {
-    type Item = Result<String>;
+    type Item = Result<Piece>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = &mut *self;
@@ -694,11 +627,11 @@ impl Stream for ChatStream {
                 }
                 Poll::Ready(None) => {
                     this.ended = true;
-                    this.done = true;
                     let rest = std::mem::take(&mut this.buf);
                     if !rest.is_empty() {
                         this.line(&rest);
                     }
+                    this.close();
                 }
                 Poll::Pending => return Poll::Pending,
             }

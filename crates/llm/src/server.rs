@@ -167,7 +167,9 @@ fn find_binary() -> Result<PathBuf> {
             return Ok(p);
         }
     }
-    bail!("{NAME} not found on PATH or in ~/.local/bin; run ./setup.sh, or pass --llm-url to use a running server")
+    bail!(
+        "{NAME} not found on PATH or in ~/.local/bin; run ./setup.sh, or pick a model from another provider with --model"
+    )
 }
 
 fn tail(path: &Path, lines: usize) -> String {

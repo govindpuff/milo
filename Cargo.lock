@@ -2039,6 +2039,7 @@ dependencies = [
  "env_logger",
  "futures-util",
  "jiff 0.2.46",
+ "libc",
  "llm",
  "log",
  "notch",

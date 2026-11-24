@@ -9,16 +9,18 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use audio::Playback;
-use llm::{Llm, Message, Role};
+use llm::{Call, Llm, Message, Role};
+use serde_json::Value;
 use speech::{Speech, SpeechEvent};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 use turn::TurnEvent;
 
 use crate::capture::AudioClock;
+use crate::computer;
 use crate::react::Bank;
-use crate::reply::{FULL_WORDS, generate, sentences, words};
-use crate::tools::Look;
+use crate::reply::generate;
+use crate::tools::{Tools, shorten};
 use crate::tts::{Gate, Job};
 
 const HARD_WAIT: Duration = Duration::from_secs(3);
@@ -34,8 +36,8 @@ const REFINE_WAIT: Duration = Duration::from_millis(450);
 const TRAIL: Duration = Duration::from_millis(100);
 const POLL: Duration = Duration::from_millis(5);
 const IDLE: Duration = Duration::from_secs(3600);
-const HISTORY_MAX: usize = 40;
-const HISTORY_KEEP: usize = 20;
+const HISTORY_MAX: usize = 80;
+const HISTORY_KEEP: usize = 30;
 const GHOST_CHARS: usize = 72;
 const SHORT_WORDS: usize = 3;
 const SHORT_PATIENCE: Duration = Duration::from_millis(600);
@@ -43,27 +45,15 @@ const MAX_NUDGES: u32 = 2;
 const SILENCE: &str = "(silence)";
 const RESULT: &str = "(result)";
 const WAITING: &str = "not done yet, waiting for them to approve on their screen:";
-const WORKING: &str = "still working on their computer, not finished yet";
-const LOOK_LINES: usize = 7;
-const PROMISE_WORDS: usize = 16;
-const PROMISES: &[&str] = &[
-    "one sec",
-    "a sec",
-    "one moment",
-    "let me",
-    "on it",
-    "hang tight",
-    "hang on",
-    "hold on",
-    "opening",
-    "checking",
-    "look it up",
-    "look that up",
-    "looking it up",
-    "looking that up",
-    "right away",
-    "i'll ",
-];
+const WORKING: &str =
+    "you were working on their computer when they said this, and that work is paused until you go on with it";
+const MAX_ROUNDS: usize = 60;
+const HELD: Duration = Duration::from_secs(8);
+const HELD_POLL: Duration = Duration::from_millis(20);
+const GRACE: Duration = Duration::from_millis(1200);
+const UNDONE: &str = "they spoke before this was finished, so it was stopped. It may or may not have happened: check what is there now before you do anything else";
+const HALTED: &str = "the person stopped it before it finished";
+const STOPPED: &str = "they pressed Stop on their screen, so the work on their computer was stopped";
 const BACKCHANNELS: &[&str] = &[
     "yeah", "yep", "yup", "uh-huh", "uh", "huh", "mhm", "mm-hmm", "mmhmm", "right", "okay", "ok", "sure", "wow",
     "nice", "cool", "oh", "ah", "ha", "haha", "true", "exactly", "gotcha", "hmm", "hm", "mm", "mhmm", "alright", "yes",
@@ -112,10 +102,12 @@ pub enum Event {
     Chunk { turn: u64, text: String },
     Mood { turn: u64, text: String },
     Opener { turn: u64, key: usize, text: String },
-    LlmDone { turn: u64, text: String, error: Option<String> },
+    LlmDone { turn: u64, text: String, calls: Vec<Call>, error: Option<String> },
     TtsFirst { turn: u64, at: Instant },
     TtsEnd { turn: u64 },
-    Doing(String),
+    Did { turn: u64, id: String, text: String },
+    Acted { turn: u64 },
+    Halt,
     Aside(String),
     Trimmed { cut: usize, system: String },
     Fatal(String),
@@ -127,7 +119,9 @@ pub struct Settings {
     pub backchannel: bool,
     pub yielding: bool,
     pub sounds: &'static [&'static str],
-    pub hands: Option<UnboundedSender<Look>>,
+    pub tools: Option<Arc<Tools>>,
+    pub schema: Option<Arc<Value>>,
+    pub listening: Arc<AtomicBool>,
     pub talking: Arc<AtomicBool>,
     pub busy: Arc<AtomicBool>,
     pub system: Option<String>,
@@ -170,7 +164,13 @@ struct Turn {
     opener_played: bool,
     nudge: bool,
     aside: bool,
-    looked: bool,
+    calls: Vec<Call>,
+    owed: Vec<String>,
+    acting: Option<JoinHandle<()>>,
+    rounds: usize,
+    hush: bool,
+    epoch: u64,
+    said: String,
     started: Instant,
     eou: Option<Instant>,
     reason: String,
@@ -351,26 +351,82 @@ impl Controller {
         self.commit("result".into());
     }
 
-    fn look(&mut self) {
-        let Some(hands) = &self.settings.hands else { return };
+    fn proceed(&mut self) {
+        let Some(tools) = self.settings.tools.clone() else { return };
         let Some(t) = self.turn.as_mut() else { return };
-        let chat = !t.words.is_empty() && !is_backchannel(&t.words) && !t.words.iter().all(|w| w == WORDLESS);
-        if t.looked || !t.committed || !t.llm_done || t.nudge || t.aside || !chat {
+        if !t.committed || !t.llm_done || t.calls.is_empty() || t.acting.is_some() {
             return;
         }
-        t.looked = true;
-        let promised = promised(&t.full);
-        let mut lines: Vec<String> = self.history.iter().filter_map(spoken_line).collect();
-        let from = lines.len().saturating_sub(LOOK_LINES);
-        let _ = hands.send(Look { lines: lines.split_off(from), time: local_time(), promised });
+        let calls = std::mem::take(&mut t.calls);
+        let text = std::mem::take(&mut t.full);
+        let words = unmarked(&text).to_string();
+        t.rounds += 1;
+        t.hush = words.chars().any(char::is_alphanumeric) && calls.iter().all(|call| tools.quiet(&call.name));
+        t.owed = calls.iter().map(|call| call.id.clone()).collect();
+        if !words.is_empty() {
+            if !t.said.is_empty() {
+                t.said.push(' ');
+            }
+            t.said.push_str(&words);
+        }
+        let id = t.id;
+        shorten(&mut self.history);
+        self.history.push(Message::called(text, &calls));
+        for call in &calls {
+            let mut args = call.args.clone();
+            args.remove("why");
+            self.dim_line(&format!("({} {})", call.name, Value::Object(args)));
+        }
+        self.settings.busy.store(true, Relaxed);
+        let acting = tokio::spawn(act(tools, calls, id, self.events.clone(), self.settings.listening.clone()));
+        if let Some(t) = self.turn.as_mut() {
+            t.acting = Some(acting);
+        }
+    }
+
+    fn on_acted(&mut self, id: u64) {
+        let Some(t) = self.turn.as_mut().filter(|t| t.id == id) else { return };
+        t.acting = None;
+        self.settings.busy.store(false, Relaxed);
+        if t.hush {
+            let _ = self.jobs.send(Job::End { turn: id });
+            return;
+        }
+        let tools = if t.rounds < MAX_ROUNDS { self.settings.schema.clone() } else { None };
+        t.llm_done = false;
+        t.epoch = computer::epoch();
+        t.llm = tokio::spawn(generate(
+            self.llm.clone(),
+            computer::compose(&self.history),
+            id,
+            t.stop.clone(),
+            self.jobs.clone(),
+            self.events.clone(),
+            self.settings.sounds,
+            false,
+            self.settings.bank.clone(),
+            None,
+            self.last_opener,
+            false,
+            tools,
+        ));
+    }
+
+    fn halt(&mut self) {
+        if self.turn.as_ref().is_some_and(|t| t.committed) {
+            self.interrupt();
+        }
+        if let Some(tools) = &self.settings.tools {
+            tools.rest(HALTED, false);
+        }
+        self.asides.push_back(STOPPED.to_string());
     }
 
     fn maybe_nudge(&mut self, now: Instant) {
-        if crate::computer::running() || !self.asides.is_empty() {
+        if computer::running() || !self.asides.is_empty() {
             self.idle_since = self.idle_since.map(|_| now);
         }
-        let quiet =
-            self.quiet() && self.asides.is_empty() && !self.settings.busy.load(Relaxed) && !crate::computer::running();
+        let quiet = self.quiet() && self.asides.is_empty() && !self.settings.busy.load(Relaxed) && !computer::running();
         if !quiet || self.nudge_at().is_none_or(|at| now < at) {
             return;
         }
@@ -429,7 +485,7 @@ impl Controller {
     fn barge(&mut self) {
         self.poll_onset();
         let Some(t) = self.turn.as_ref() else { return };
-        if t.nudge || t.aside || !early(t, Instant::now()) {
+        if t.nudge || t.aside || t.rounds > 0 || !early(t, Instant::now()) {
             self.interrupt();
             return;
         }
@@ -567,6 +623,7 @@ impl Controller {
     fn on_voice(&mut self, ev: TurnEvent) {
         match ev {
             TurnEvent::Start { seq } => {
+                self.settings.listening.store(true, Relaxed);
                 self.idle_since = self.idle_since.map(|_| Instant::now());
                 self.voice_seq = seq;
                 self.voice_start = Some(Instant::now());
@@ -577,12 +634,13 @@ impl Controller {
             }
             TurnEvent::End { seq, prob, complete, refining, voiced_ms, speech_end, at } if seq == self.voice_seq => {
                 log::debug!("voice end: complete {complete:?} prob {prob:?} voiced {voiced_ms} ms");
+                self.settings.listening.store(false, Relaxed);
                 self.voice_start = None;
                 let refining = refining && self.refined_seq != Some(seq);
                 self.verdict = Some(Verdict { complete, prob, speech_end, at, refining, seq, voiced_ms, acked: false });
                 self.maybe_wordless();
             }
-            TurnEvent::End { .. } => {}
+            TurnEvent::End { .. } => self.settings.listening.store(false, Relaxed),
             TurnEvent::Refined { seq, text } => {
                 self.refined_seq = Some(seq);
                 if seq != self.voice_seq {
@@ -645,7 +703,7 @@ impl Controller {
                 }
             }
             Event::Opener { turn, key, text } => self.on_opener(turn, key, text),
-            Event::LlmDone { turn, text, error } => self.on_llm_done(turn, text, error),
+            Event::LlmDone { turn, text, calls, error } => self.on_llm_done(turn, text, calls, error),
             Event::TtsFirst { turn, at } => {
                 if let Some(t) = self.current(turn) {
                     t.tts_first.get_or_insert(at);
@@ -657,12 +715,14 @@ impl Controller {
                     self.settings.talking.store(false, Relaxed);
                 }
             }
-            Event::Doing(what) => {
-                if let Some(t) = self.turn.as_mut() {
-                    close_line(t);
-                }
-                self.dim_line(&format!("({what})"));
+            Event::Did { turn, id, text } => {
+                let Some(t) = self.turn.as_mut().filter(|t| t.id == turn) else { return };
+                t.owed.retain(|owed| *owed != id);
+                self.dim_line(&format!("-> {}", crate::tools::brief(&text)));
+                self.history.push(Message::tool(&id, text));
             }
+            Event::Acted { turn } => self.on_acted(turn),
+            Event::Halt => self.halt(),
             Event::Aside(text) => self.asides.push_back(text),
             Event::Trimmed { cut, system } => {
                 self.trimming = false;
@@ -768,7 +828,7 @@ impl Controller {
         if !waiting.is_empty() {
             stamp.push_str(&format!("; {WAITING} {}", waiting.join(" ")));
         }
-        if crate::computer::running() {
+        if computer::running() {
             stamp.push_str(&format!("; {WORKING}"));
         }
         let prompt = format!("[{stamp}] {text}{}", if brief { " ..." } else { "" });
@@ -777,7 +837,7 @@ impl Controller {
         messages.push(Message::user(prompt.clone()));
         let llm = tokio::spawn(generate(
             self.llm.clone(),
-            messages,
+            computer::compose(&messages),
             id,
             stop.clone(),
             self.jobs.clone(),
@@ -788,6 +848,7 @@ impl Controller {
             said,
             self.last_opener,
             brief,
+            self.settings.schema.clone(),
         ));
         let now = Instant::now();
         self.turn = Some(Turn {
@@ -801,7 +862,13 @@ impl Controller {
             opener_played: false,
             nudge: false,
             aside: false,
-            looked: false,
+            calls: Vec::new(),
+            owed: Vec::new(),
+            acting: None,
+            rounds: 0,
+            hush: false,
+            epoch: computer::epoch(),
+            said: String::new(),
             started: now,
             eou,
             reason: String::new(),
@@ -873,9 +940,12 @@ impl Controller {
         }
         if t.llm_done {
             close_line(t);
+            if !t.calls.is_empty() {
+                t.line = Line::Unopened;
+            }
         }
         flush();
-        self.look();
+        self.proceed();
     }
 
     fn on_chunk(&mut self, id: u64, text: String) {
@@ -906,17 +976,21 @@ impl Controller {
         self.on_chunk(id, text);
     }
 
-    fn on_llm_done(&mut self, id: u64, text: String, error: Option<String>) {
+    fn on_llm_done(&mut self, id: u64, text: String, calls: Vec<Call>, error: Option<String>) {
         if let Some(e) = &error {
             log::warn!("llm: {e}");
         }
         let Some(t) = self.current(id) else { return };
         t.llm_done = true;
         t.full = text;
+        t.calls = calls;
         if t.committed {
             close_line(t);
+            if !t.calls.is_empty() {
+                t.line = Line::Unopened;
+            }
             self.print_metrics();
-            self.look();
+            self.proceed();
         }
     }
 
@@ -945,7 +1019,8 @@ impl Controller {
 
     fn check_end(&mut self) {
         let Some(t) = &self.turn else { return };
-        if !(t.committed && t.llm_done && t.tts_done) || self.playback.queued_ms() > 0 {
+        let acting = !t.calls.is_empty() || t.acting.is_some();
+        if !(t.committed && t.llm_done && t.tts_done) || acting || self.playback.queued_ms() > 0 {
             return;
         }
         self.poll_onset();
@@ -957,6 +1032,11 @@ impl Controller {
             log::debug!("audio ran dry {}x, {}ms in total", gaps.0 - self.gaps.0, gaps.1 - self.gaps.1);
         }
         self.gaps = gaps;
+        if t.epoch == computer::epoch()
+            && let Some(tools) = &self.settings.tools
+        {
+            tools.rest(&t.full, true);
+        }
         if !t.full.trim().is_empty() && remember(&mut self.history, Message::assistant(t.full)) {
             self.trim();
         }
@@ -967,8 +1047,20 @@ impl Controller {
         let Some(mut t) = self.turn.take() else { return };
         t.stop.store(true, Relaxed);
         t.llm.abort();
+        if let Some(acting) = t.acting.take() {
+            acting.abort();
+            tokio::spawn(computer::refresh());
+        }
+        for id in t.owed.drain(..) {
+            self.history.push(Message::tool(&id, UNDONE));
+        }
+        self.settings.busy.store(false, Relaxed);
         self.settings.talking.store(false, Relaxed);
         let heard = self.gate.interrupt(t.id);
+        let heard = match heard.strip_prefix(t.said.as_str()) {
+            Some(rest) => rest.trim().to_string(),
+            None => String::new(),
+        };
         close_line(&mut t);
         if let (Some(onset), false) = (t.onset, t.metrics_printed) {
             self.dim_line(&metrics(&t, onset));
@@ -1002,9 +1094,9 @@ impl Controller {
         let mut next = vec![Message::system(system.clone())];
         next.extend_from_slice(&self.history[1 + cut..]);
         self.trimming = true;
-        let (llm, events) = (self.llm.clone(), self.events.clone());
+        let (llm, events, schema) = (self.llm.clone(), self.events.clone(), self.settings.schema.clone());
         tokio::spawn(async move {
-            if let Err(e) = llm.warm(&next).await {
+            if let Err(e) = llm.warm(&next, schema.as_deref()).await {
                 log::debug!("cache warm failed: {e:#}");
             }
             let _ = events.send(Event::Trimmed { cut, system });
@@ -1040,6 +1132,9 @@ impl Controller {
         if let Some(mut t) = self.turn.take() {
             t.stop.store(true, Relaxed);
             t.llm.abort();
+            if let Some(acting) = t.acting.take() {
+                acting.abort();
+            }
             self.gate.interrupt(t.id);
             close_line(&mut t);
         }
@@ -1118,12 +1213,36 @@ fn is_backchannel(words: &[String]) -> bool {
     words.len() <= 3 && words.iter().all(|w| BACKCHANNELS.contains(&w.as_str()))
 }
 
-fn promised(reply: &str) -> bool {
-    let reply = reply.to_lowercase();
-    let makes = |s: &str| PROMISES.iter().any(|p| s.contains(p));
-    reply.split_whitespace().count() <= PROMISE_WORDS
-        && makes(&reply)
-        && !sentences(&reply).iter().any(|s| !makes(s) && words(s) >= FULL_WORDS)
+fn unmarked(text: &str) -> &str {
+    let text = text.trim();
+    match text.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+        Some((_, rest)) => rest.trim(),
+        None => text,
+    }
+}
+
+async fn act(
+    tools: Arc<Tools>,
+    calls: Vec<Call>,
+    turn: u64,
+    events: UnboundedSender<Event>,
+    listening: Arc<AtomicBool>,
+) {
+    for call in calls {
+        let waited = Instant::now();
+        let mut quiet = Instant::now();
+        let mut heard = false;
+        while waited.elapsed() < HELD && (listening.load(Relaxed) || (heard && quiet.elapsed() < GRACE)) {
+            if listening.load(Relaxed) {
+                heard = true;
+                quiet = Instant::now();
+            }
+            tokio::time::sleep(HELD_POLL).await;
+        }
+        let text = tools.run(&call).await;
+        let _ = events.send(Event::Did { turn, id: call.id, text });
+    }
+    let _ = events.send(Event::Acted { turn });
 }
 
 fn local_time() -> String {
@@ -1137,21 +1256,6 @@ fn content_words(text: &str) -> Vec<String> {
         .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
         .filter(|w| !w.is_empty() && !FILLERS.contains(&w.as_str()))
         .collect()
-}
-
-fn spoken_line(m: &Message) -> Option<String> {
-    let body = match m.content.strip_prefix('[').and_then(|r| r.split_once(']')) {
-        Some((_, rest)) => rest.trim(),
-        None => m.content.trim(),
-    };
-    if body.is_empty() || body.starts_with('(') && [RESULT, SILENCE, WORDLESS].iter().any(|k| body.starts_with(k)) {
-        return None;
-    }
-    match m.role {
-        Role::User => Some(format!("Person: {body}")),
-        Role::Assistant => Some(format!("Milo: {body}")),
-        Role::System | Role::Tool => None,
-    }
 }
 
 fn remember(history: &mut Vec<Message>, message: Message) -> bool {
