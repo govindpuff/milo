@@ -10,6 +10,7 @@ const LINE: usize = 420;
 const FEW: usize = 2;
 const NAMED: usize = 2;
 const NONE: &str = "none yet";
+const UNDONE: &str = "\n\nThe task was not finished. Nothing in this record got it done, so do not add a note that says how to do something, and do not change one. Only add what the record shows does not work here.";
 
 const WRITE: &str = "You keep notes on how to work in one app or one website on a person's Mac. Another assistant operates it one action at a time, and reads your notes before it starts, so that it gets there in fewer actions the next time. You get the notes so far, and a record of what it just did there: each action, and what the action led to.
 
@@ -26,6 +27,7 @@ pub struct Step {
     pub place: String,
     pub did: String,
     pub wasted: bool,
+    pub acted: bool,
 }
 
 fn folder() -> Result<PathBuf> {
@@ -94,7 +96,7 @@ pub fn named(text: &str) -> Vec<String> {
     out
 }
 
-async fn rewrite(llm: &Llm, place: &str, task: &str, record: &[&Step], ended: &str) -> Result<usize> {
+async fn rewrite(llm: &Llm, place: &str, task: &str, record: &[&Step], ended: &str, done: bool) -> Result<usize> {
     let had = notes(place);
     let before = if had.is_empty() { NONE.to_string() } else { format!("- {}", had.join("\n- ")) };
     let from = record.len().saturating_sub(RECORD);
@@ -104,8 +106,9 @@ async fn rewrite(llm: &Llm, place: &str, task: &str, record: &[&Step], ended: &s
         .map(|(i, step)| format!("{}. {}", i + 1, step.did.chars().take(LINE).collect::<String>()))
         .collect();
     let ask = format!(
-        "The place: {place}\n\nThe notes so far:\n{before}\n\nWhat was asked for: {task}\n\nThe record:\n{}\n\nHow it ended: {ended}",
-        lines.join("\n")
+        "The place: {place}\n\nThe notes so far:\n{before}\n\nWhat was asked for: {task}\n\nThe record:\n{}\n\nHow it ended: {ended}{}",
+        lines.join("\n"),
+        if done { "" } else { UNDONE }
     );
     let reply = llm.write(&[Message::system(WRITE), Message::user(ask)]).await?;
     let now = listed(&reply);
@@ -119,7 +122,7 @@ async fn rewrite(llm: &Llm, place: &str, task: &str, record: &[&Step], ended: &s
     Ok(now.len())
 }
 
-pub async fn learn(llm: Llm, task: String, trail: Vec<Step>, ended: String) {
+pub async fn learn(llm: Llm, task: String, trail: Vec<Step>, ended: String, done: bool) {
     let mut places: Vec<&str> = Vec::new();
     for step in &trail {
         if !step.place.is_empty() && !places.contains(&step.place.as_str()) {
@@ -129,10 +132,10 @@ pub async fn learn(llm: Llm, task: String, trail: Vec<Step>, ended: String) {
     for place in places {
         let record: Vec<&Step> = trail.iter().filter(|step| step.place == place).collect();
         let rough = record.iter().any(|step| step.wasted);
-        if record.len() < FEW || (!rough && brief(place).is_some()) {
+        if record.iter().filter(|step| step.acted).count() < FEW || (!rough && brief(place).is_some()) {
             continue;
         }
-        match rewrite(&llm, place, &task, &record, &ended).await {
+        match rewrite(&llm, place, &task, &record, &ended, done).await {
             Ok(0) => {}
             Ok(count) => log::info!("kept {count} notes about working in {place}"),
             Err(e) => log::warn!("the notes about {place} could not be written: {e:#}"),
