@@ -219,8 +219,12 @@ func aim(_ request: [String: Any]) throws -> String {
             }
         } else {
             let name = what.lowercased()
-            hit = running.first { $0.localizedName?.lowercased() == name }
-                ?? running.first { $0.localizedName?.lowercased().contains(name) == true }
+            let file = { (app: NSRunningApplication) in
+                app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() ?? ""
+            }
+            hit = running.first { $0.localizedName?.lowercased() == name || file($0) == name }
+                ?? running.first { $0.localizedName?.lowercased().contains(name) == true || file($0).contains(name) }
+                ?? running.first { ($0.localizedName?.lowercased()).map { $0.count > 2 && name.contains($0) } == true }
         }
         if let hit {
             if aimed != hit.processIdentifier { pinned = nil }
@@ -228,7 +232,11 @@ func aim(_ request: [String: Any]) throws -> String {
             restore(hit.processIdentifier)
             return "working in \(hit.localizedName ?? what)"
         }
-        if Date() > until { throw Failure(text: "\(what) is not open") }
+        if Date() > until {
+            aimed = nil
+            pinned = nil
+            throw Failure(text: "\(what) is not open")
+        }
         usleep(200_000)
     }
 }
