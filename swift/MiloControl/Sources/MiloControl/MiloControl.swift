@@ -1,7 +1,6 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
-import CoreText
 import ImageIO
 import ScreenCaptureKit
 
@@ -22,12 +21,20 @@ enum Limit {
     static let captured: CGFloat = 2400
     static let sent: CGFloat = 640_000
     static let quality = 0.72
-    static let columns = 6
-    static let rows = 4
     static let print = 24
     static let capture = 6.0
     static let launch = 4.0
     static let small: CGFloat = 5
+    static let reach: CGFloat = 10
+    static let closer: CGFloat = 3
+    static let build = 3.0
+    static let brief: Float = 0.3
+    static let swap: UInt32 = 10_000
+    static let taken: UInt32 = 250_000
+    static let glance: CGFloat = 320
+    static let sought = 1500
+    static let around = 24
+    static let read: UInt32 = 200_000
 }
 
 struct Failure: Error {
@@ -76,8 +83,8 @@ nonisolated(unsafe) var labels: [String] = []
 nonisolated(unsafe) var boxes: [CGRect?] = []
 nonisolated(unsafe) var aimed: pid_t?
 nonisolated(unsafe) var pane = CGRect.zero
-nonisolated(unsafe) var view: CGRect?
 nonisolated(unsafe) var pane_id: CGWindowID = 0
+nonisolated(unsafe) var shot: CGImage?
 
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
@@ -86,18 +93,43 @@ typealias Post = @convention(c) (pid_t, CGEvent) -> Void
 typealias Record = @convention(c) (UnsafeRawPointer, UnsafeRawPointer) -> Int32
 typealias Front = @convention(c) (UnsafeMutableRawPointer) -> Int32
 typealias Serial = @convention(c) (pid_t, UnsafeMutableRawPointer) -> Int32
+typealias Owner = @convention(c) (UnsafeRawPointer, UnsafeMutablePointer<pid_t>) -> Int32
 
 let skylight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
 let everywhere = UnsafeMutableRawPointer(bitPattern: -2)
 let post: Post? = dlsym(skylight, "SLEventPostToPid").map { unsafeBitCast($0, to: Post.self) }
 let record: Record? = dlsym(skylight, "SLPSPostEventRecordTo").map { unsafeBitCast($0, to: Record.self) }
 let foremost: Front? = dlsym(skylight, "_SLPSGetFrontProcess").map { unsafeBitCast($0, to: Front.self) }
+let owner: Owner? = dlsym(everywhere, "GetProcessPID").map { unsafeBitCast($0, to: Owner.self) }
 let serial: Serial? = dlsym(everywhere, "GetProcessForPID").map { unsafeBitCast($0, to: Serial.self) }
 
 final class Held: @unchecked Sendable {
     var image: CGImage?
 }
 nonisolated(unsafe) var woken: Set<pid_t> = []
+nonisolated(unsafe) var fresh = false
+nonisolated(unsafe) var pinned: CGWindowID?
+nonisolated(unsafe) var nook: CGWindowID?
+nonisolated(unsafe) var held: pid_t?
+nonisolated(unsafe) var known: Set<pid_t> = []
+
+func leader() -> pid_t? {
+    var ahead = [UInt32](repeating: 0, count: 2)
+    var pid: pid_t = 0
+    guard let foremost, let owner, foremost(&ahead) == 0, owner(ahead, &pid) == 0, pid > 0 else {
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+    return pid
+}
+
+func apps() -> [NSRunningApplication] {
+    var pids = Set(NSWorkspace.shared.runningApplications.map(\.processIdentifier))
+    let listed = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+    for entry in listed {
+        if let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value { pids.insert(pid) }
+    }
+    return pids.compactMap { NSRunningApplication(processIdentifier: $0) }.filter { !$0.isTerminated }
+}
 
 func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
     var value: AnyObject?
@@ -143,6 +175,7 @@ func wake(_ pid: pid_t, _ app: AXUIElement) {
     let manual = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
     let enhanced = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     if manual == .success || enhanced == .success { usleep(Limit.settle) }
+    fresh = manual == .success
 }
 
 func front() throws -> (NSRunningApplication, AXUIElement) {
@@ -157,7 +190,9 @@ func front() throws -> (NSRunningApplication, AXUIElement) {
         AXUIElementGetPid(focused, &pid)
     }
     let running = NSRunningApplication(processIdentifier: pid) ?? NSWorkspace.shared.frontmostApplication
-    guard let running else { throw Failure(text: "no app is in front") }
+    guard let running, running.activationPolicy == .regular else {
+        throw Failure(text: "no app has been opened yet; start with open")
+    }
     aimed = running.processIdentifier
     let app = AXUIElementCreateApplication(running.processIdentifier)
     wake(running.processIdentifier, app)
@@ -175,7 +210,7 @@ func aim(_ request: [String: Any]) throws -> String {
     let until = Date().addingTimeInterval(Limit.launch)
     let site = what.contains(".") && !what.contains(" ")
     while true {
-        let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        let running = apps().filter { $0.activationPolicy == .regular }
         var hit: NSRunningApplication?
         if site {
             let address = what.contains("://") ? what : "https://\(what)"
@@ -189,8 +224,9 @@ func aim(_ request: [String: Any]) throws -> String {
                 ?? running.first { $0.localizedName?.lowercased().contains(name) == true }
         }
         if let hit {
+            if aimed != hit.processIdentifier { pinned = nil }
             aimed = hit.processIdentifier
-            view = nil
+            restore(hit.processIdentifier)
             return "working in \(hit.localizedName ?? what)"
         }
         if Date() > until { throw Failure(text: "\(what) is not open") }
@@ -199,8 +235,13 @@ func aim(_ request: [String: Any]) throws -> String {
 }
 
 func window(_ app: AXUIElement) -> AXUIElement? {
-    element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute)
+    if let pinned, let kept = elements(app, kAXWindowsAttribute).first(where: { number($0) == pinned }) {
+        return kept
+    }
+    let found = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute)
         ?? elements(app, kAXWindowsAttribute).first
+    pinned = found.map(number)
+    return found
 }
 
 func gather(_ node: AXUIElement, _ depth: Int, _ into: inout [String]) {
@@ -221,8 +262,33 @@ struct Walk {
     var texts = 0
     var visited = 0
     var cut = false
+    var skip: AXUIElement?
+    var around = false
+    var hidden = 0
+    var last = ""
     let bounds: CGRect?
     let until: Date
+}
+
+func page(_ window: AXUIElement) -> AXUIElement? {
+    var queue = [window]
+    var seen = 0
+    while !queue.isEmpty && seen < Limit.sought {
+        let node = queue.removeFirst()
+        seen += 1
+        let role = string(node, kAXRoleAttribute) ?? ""
+        if role == "AXWebArea" { return node }
+        if role == "AXMenuBar" { continue }
+        queue.append(contentsOf: elements(node, kAXChildrenAttribute))
+    }
+    return nil
+}
+
+func loaded(_ page: AXUIElement?) -> Bool {
+    guard let page else { return true }
+    if let done = attribute(page, "AXLoaded") as? Bool { return done }
+    if let progress = attribute(page, "AXLoadingProgress") as? NSNumber { return progress.doubleValue >= 1 }
+    return true
 }
 
 func kind(_ element: AXUIElement) -> String {
@@ -245,15 +311,17 @@ func children(_ node: AXUIElement, _ role: String) -> [AXUIElement] {
     return elements(node, kAXChildrenAttribute)
 }
 
-func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ walk: inout Walk) {
+func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ walk: inout Walk) {
     if depth > Limit.depth { return }
     walk.visited += 1
     if walk.visited > Limit.visited || marked.count >= Limit.controls || Date() > walk.until {
         walk.cut = true
         return
     }
+    if let skip = walk.skip, CFEqual(skip, node) { return }
     let role = kind(node)
     if role == "AXMenuBar" { return }
+    var above = above
     if let bounds = walk.bounds, let box = frame(node), box.width > 0, box.height > 0, !box.intersects(bounds) {
         return
     }
@@ -272,7 +340,16 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ walk: inout Walk)
             name = tidy(parts.joined(separator: " · "), Limit.name)
         }
         if name.isEmpty { name = tidy(string(node, kAXHelpAttribute), Limit.name) }
-        if !name.isEmpty || inputs.contains(role) {
+        let label = "\(words[role] ?? "control")\(name.isEmpty ? "" : " \"\(name)\"")"
+        let chosen = (attribute(node, kAXSelectedAttribute) as? Bool) == true
+        let on = ((attribute(node, kAXValueAttribute) as? NSNumber)?.intValue ?? 0) != 0
+        let spare = walk.around && (role == "AXTab" || role == "AXRadioButton") && !chosen && !on
+        let full = walk.around && walk.lines.count >= Limit.around && !inputs.contains(role)
+        if spare || full { walk.hidden += 1 }
+        if label == above || spare || full {
+            hush = true
+        } else if !name.isEmpty || inputs.contains(role) {
+            above = label
             marked.append(node)
             boxes.append(frame(node))
             var line = "[\(marked.count)] \(words[role] ?? "control")"
@@ -285,28 +362,35 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ walk: inout Walk)
                 let value = (attribute(node, kAXValueAttribute) as? NSNumber)?.intValue ?? 0
                 line += value == 0 ? " (off)" : " (on)"
             }
-            if (attribute(node, kAXSelectedAttribute) as? Bool) == true { line += " (selected)" }
+            if chosen { line += " (selected)" }
             if (attribute(node, kAXFocusedAttribute) as? Bool) == true { line += " (focused)" }
             if (attribute(node, kAXEnabledAttribute) as? Bool) == false { line += " (disabled)" }
             walk.lines.append(line)
-            labels.append("\(words[role] ?? "control")\(name.isEmpty ? "" : " \"\(name)\"")")
+            walk.last = name
+            labels.append(label)
             hush = true
             if inputs.contains(role) { return }
         }
     } else if !quiet && (role == "AXStaticText" || role == "AXHeading") && walk.texts < Limit.texts {
-        let text = tidy(string(node, kAXValueAttribute) ?? string(node, kAXTitleAttribute), Limit.value)
-        if !text.isEmpty {
+        var text = tidy(string(node, role == "AXHeading" ? kAXTitleAttribute : kAXValueAttribute), Limit.value)
+        if text.isEmpty && role == "AXHeading" {
+            var parts: [String] = []
+            gather(node, 0, &parts)
+            text = tidy(parts.joined(separator: " "), Limit.value)
+        }
+        if text.isEmpty && role != "AXHeading" { text = tidy(string(node, kAXTitleAttribute), Limit.value) }
+        if !text.isEmpty && text != walk.last {
             walk.texts += 1
             walk.lines.append(role == "AXHeading" ? "heading: \(text)" : "text: \(text)")
             if role == "AXHeading" { hush = true }
         }
     }
     for child in children(node, role) {
-        visit(child, depth + 1, hush, &walk)
+        visit(child, depth + 1, hush, above, &walk)
     }
 }
 
-func capture(_ id: CGWindowID, _ size: CGSize) throws -> CGImage {
+func capture(_ id: CGWindowID, _ size: CGSize, _ longest: CGFloat = Limit.captured) throws -> CGImage {
     guard CGPreflightScreenCaptureAccess() else {
         CGRequestScreenCaptureAccess()
         throw Failure(
@@ -314,7 +398,7 @@ func capture(_ id: CGWindowID, _ size: CGSize) throws -> CGImage {
                 "Screen Recording is turned off for the terminal app, so the screen cannot be seen. They need to turn it on in System Settings, under Privacy and Security, Screen Recording, and then start milo again"
         )
     }
-    let scale = min(2, Limit.captured / max(size.width, size.height, 1))
+    let scale = min(2, longest / max(size.width, size.height, 1))
     let held = Held()
     let done = DispatchSemaphore(value: 0)
     Task.detached {
@@ -335,93 +419,17 @@ func capture(_ id: CGWindowID, _ size: CGSize) throws -> CGImage {
     return image
 }
 
-let tints: [CGColor] = [
-    CGColor(red: 0.86, green: 0.1, blue: 0.1, alpha: 1), CGColor(red: 0.05, green: 0.4, blue: 0.9, alpha: 1),
-    CGColor(red: 0.05, green: 0.55, blue: 0.2, alpha: 1), CGColor(red: 0.7, green: 0.2, blue: 0.8, alpha: 1),
-    CGColor(red: 0.85, green: 0.45, blue: 0, alpha: 1), CGColor(red: 0, green: 0.55, blue: 0.6, alpha: 1),
-]
-
-func tag(_ context: CGContext, _ text: String, _ size: CGFloat, _ tint: CGColor, _ place: (CGSize) -> CGPoint) {
-    let font = CTFontCreateWithName("Helvetica-Bold" as CFString, size, nil)
-    let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
-    let styled = NSAttributedString(
-        string: text,
-        attributes: [
-            NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): white,
-        ])
-    let line = CTLineCreateWithAttributedString(styled)
-    let bounds = CTLineGetBoundsWithOptions(line, .useOpticalBounds)
-    let extent = CGSize(width: bounds.width + 6, height: size + 4)
-    let origin = place(extent)
-    context.setFillColor(tint)
-    context.fill(CGRect(origin: origin, size: extent))
-    context.textPosition = CGPoint(x: origin.x + 3, y: origin.y + 4)
-    CTLineDraw(line, context)
-}
-
-func cells(_ area: CGRect) -> [(String, CGRect)] {
-    var out: [(String, CGRect)] = []
-    let width = area.width / CGFloat(Limit.columns)
-    let height = area.height / CGFloat(Limit.rows)
-    for row in 0..<Limit.rows {
-        for column in 0..<Limit.columns {
-            let name = "\(Character(UnicodeScalar(UInt8(65 + column))))\(row + 1)"
-            let box = CGRect(
-                x: area.minX + CGFloat(column) * width, y: area.minY + CGFloat(row) * height, width: width,
-                height: height)
-            out.append((name, box))
-        }
-    }
-    return out
-}
-
-func render(_ image: CGImage, _ area: CGRect, _ grid: Bool) -> Data? {
-    let ratio = CGFloat(image.width) / max(pane.width, 1)
-    let local = CGRect(
-        x: (area.minX - pane.minX) * ratio, y: (area.minY - pane.minY) * ratio, width: area.width * ratio,
-        height: area.height * ratio)
-    guard let piece = image.cropping(to: local) else { return nil }
-    let scale = min((Limit.sent / max(area.width * area.height, 1)).squareRoot(), 3)
-    let width = Int(area.width * scale)
-    let height = Int(area.height * scale)
+func render(_ image: CGImage) -> Data? {
+    let scale = (Limit.sent / max(CGFloat(image.width * image.height), 1)).squareRoot()
+    let width = Int(CGFloat(image.width) * scale)
+    let height = Int(CGFloat(image.height) * scale)
     guard width > 0, height > 0,
         let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
     else { return nil }
     context.interpolationQuality = .high
-    context.draw(piece, in: CGRect(x: 0, y: 0, width: width, height: height))
-    let place = { (box: CGRect) -> CGRect in
-        CGRect(
-            x: (box.minX - area.minX) * scale, y: CGFloat(height) - (box.maxY - area.minY) * scale,
-            width: box.width * scale, height: box.height * scale)
-    }
-    if grid {
-        for (index, (name, box)) in cells(area).enumerated() {
-            let tint = tints[index % tints.count]
-            let spot = place(box)
-            context.setStrokeColor(tint)
-            context.setLineWidth(1.5)
-            context.stroke(spot)
-            tag(context, name, 15, tint) { extent in
-                CGPoint(x: spot.midX - extent.width / 2, y: spot.midY - extent.height / 2)
-            }
-        }
-    } else {
-        for (index, box) in boxes.enumerated() {
-            guard let box, box.width >= Limit.small, box.height >= Limit.small, box.intersects(area) else { continue }
-            let tint = tints[index % tints.count]
-            let spot = place(box)
-            context.setStrokeColor(tint)
-            context.setLineWidth(1.5)
-            context.stroke(spot)
-            tag(context, "\(index + 1)", 11, tint) { extent in
-                let above = spot.maxY + extent.height <= CGFloat(height)
-                return CGPoint(x: max(0, spot.minX), y: above ? spot.maxY : spot.maxY - extent.height)
-            }
-        }
-    }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
     guard let drawn = context.makeImage() else { return nil }
     let data = NSMutableData()
     guard let out = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return nil }
@@ -440,49 +448,81 @@ func print(_ image: CGImage) -> String {
     return pixels.map { String(format: "%02x", $0) }.joined()
 }
 
-func look(_ request: [String: Any], _ grid: Bool) throws -> [String: Any] {
+func look(_ request: [String: Any]) throws -> [String: Any] {
     let (running, app) = try front()
     marked = []
     labels = []
     boxes = []
     var head = "App: \(running.localizedName ?? "unknown")"
     guard let target = window(app), let bounds = frame(target), bounds.width > 1, bounds.height > 1 else {
-        view = nil
         return ["text": head + "\nIt has no window open. Use menu or press to open one."]
     }
     pane = bounds
     pane_id = number(target)
     let title = tidy(string(target, kAXTitleAttribute), Limit.name)
     if !title.isEmpty { head += "\nWindow: \(title)" }
-    var walk = Walk(bounds: bounds, until: Date().addingTimeInterval(Limit.seconds))
-    visit(target, 0, false, &walk)
+    let until = Date().addingTimeInterval(Limit.seconds)
+    var walk = Walk(bounds: bounds, until: until)
+    var web = page(target)
+    let patience = Date().addingTimeInterval(Limit.build)
+    while fresh && web == nil && Date() < patience {
+        usleep(Limit.read)
+        web = page(target)
+    }
+    fresh = false
+    if let web { visit(web, 0, false, "", &walk) }
+    var rest = Walk(bounds: bounds, until: until)
+    rest.skip = web
+    rest.around = web != nil
+    rest.visited = walk.visited
+    visit(target, 0, web != nil, "", &rest)
+    if web != nil && !rest.lines.isEmpty {
+        walk.lines.append("Around the page, in the app's own window:")
+    }
+    walk.lines.append(contentsOf: rest.lines)
+    if rest.hidden > 0 { walk.lines.append("(\(rest.hidden) more tabs and buttons of the app are not listed)") }
+    walk.cut = walk.cut || rest.cut
+    if !loaded(web) { walk.lines.append("(the page is still loading)") }
     let image = try capture(pane_id, bounds.size)
-    var area = bounds
-    if grid {
-        if let name = (request["cell"] as? String)?.uppercased().trimmingCharacters(in: .whitespaces), !name.isEmpty {
-            let within = view.flatMap { $0.intersects(bounds) ? $0.intersection(bounds) : nil } ?? bounds
-            guard let cell = cells(within).first(where: { $0.0 == name }) else {
-                throw Failure(text: "there is no square \(name); the squares are A1 to F4")
-            }
-            area = cell.1
-        }
-        view = area
-        head +=
-            "\nThe picture shows \(area == bounds ? "the window" : "a closer view of one square") divided into squares named A1 to F4. To get closer, call grid with a square. To click the middle of a square, call click with that square."
+    shot = image
+    if walk.lines.isEmpty {
+        head += "\nNo controls could be read in this window. Use the picture, and click what you see by describing it."
     } else {
-        if walk.lines.isEmpty {
-            head += "\nNo controls could be read in this window. Use the picture, and grid to click by square."
-        } else {
-            head += "\n" + walk.lines.joined(separator: "\n")
-            if walk.cut { head += "\n(there is more in this window than is listed)" }
-        }
+        head += "\n" + walk.lines.joined(separator: "\n")
+        if walk.cut { head += "\n(there is more in this window than is listed)" }
     }
     var out: [String: Any] = ["text": head, "print": print(image)]
-    if let data = render(image, area, grid) {
+    if let data = render(image) {
         out["image"] = data.base64EncodedString()
         if let save = request["save"] as? String { try? data.write(to: URL(fileURLWithPath: save)) }
     }
     return out
+}
+
+func closer(_ request: [String: Any]) throws -> [String: Any] {
+    guard let shot, let x = (request["x"] as? NSNumber)?.doubleValue,
+        let y = (request["y"] as? NSNumber)?.doubleValue
+    else { throw Failure(text: "there is no picture to look closer at") }
+    let share = 1 / Limit.closer
+    let left = min(max(x - share / 2, 0), 1 - share)
+    let top = min(max(y - share / 2, 0), 1 - share)
+    let area = CGRect(
+        x: left * CGFloat(shot.width), y: top * CGFloat(shot.height), width: share * CGFloat(shot.width),
+        height: share * CGFloat(shot.height))
+    guard let piece = shot.cropping(to: area), let data = render(piece) else {
+        throw Failure(text: "the picture could not be cut")
+    }
+    if let save = request["save"] as? String { try? data.write(to: URL(fileURLWithPath: save)) }
+    return ["text": "", "image": data.base64EncodedString(), "left": left, "top": top, "share": share]
+}
+
+func glance() throws -> [String: Any] {
+    let (_, app) = try front()
+    guard let target = window(app), let bounds = frame(target), bounds.width > 1, bounds.height > 1 else {
+        return ["text": "", "print": "", "loaded": true]
+    }
+    let image = try capture(number(target), bounds.size, Limit.glance)
+    return ["text": "", "print": print(image), "loaded": loaded(page(target))]
 }
 
 func target(_ request: [String: Any]) throws -> (AXUIElement, String, CGRect?) {
@@ -511,17 +551,43 @@ func tell(_ process: [UInt32], _ window: CGWindowID, _ mode: UInt8) {
     _ = record(process, bytes)
 }
 
+func crown(_ process: [UInt32], _ window: CGWindowID) {
+    guard let record else { return }
+    for stage in [UInt8(0x01), UInt8(0x02)] {
+        var bytes = [UInt8](repeating: 0, count: 0xf8)
+        bytes[0x04] = 0xf8
+        bytes[0x08] = stage
+        bytes[0x3a] = 0x10
+        for offset in 0x20..<0x30 { bytes[offset] = 0xff }
+        withUnsafeBytes(of: window) { raw in
+            for (offset, byte) in raw.enumerated() { bytes[0x3c + offset] = byte }
+        }
+        _ = record(process, bytes)
+    }
+}
+
 func borrow(_ pid: pid_t, _ work: () -> Void) {
     var ahead = [UInt32](repeating: 0, count: 2)
     guard let foremost, foremost(&ahead) == 0, let mine = psn(pid), mine != ahead else {
         work()
         return
     }
+    var theirs: CGWindowID = 0
+    if let other = leader() {
+        let app = AXUIElementCreateApplication(other)
+        AXUIElementSetMessagingTimeout(app, Limit.brief)
+        if let focused = element(app, kAXFocusedWindowAttribute) { theirs = number(focused) }
+    }
+    tell(ahead, theirs, 0x02)
+    usleep(Limit.swap)
     tell(mine, pane_id, 0x01)
-    usleep(30_000)
+    crown(mine, pane_id)
+    usleep(Limit.taken)
     work()
-    usleep(60_000)
+    usleep(Limit.taken)
     tell(mine, pane_id, 0x02)
+    usleep(Limit.swap)
+    tell(ahead, theirs, 0x01)
 }
 
 func forward(_ pid: pid_t) {
@@ -556,9 +622,9 @@ func poke(_ point: CGPoint, _ pid: pid_t) {
 }
 
 func tap(_ point: CGPoint, _ pid: pid_t) {
-    let before = NSWorkspace.shared.frontmostApplication
+    let before = leader()
     let cursor = CGEvent(source: nil)?.location
-    if before?.processIdentifier != pid {
+    if before != pid {
         forward(pid)
         usleep(Limit.settle)
     }
@@ -571,7 +637,19 @@ func tap(_ point: CGPoint, _ pid: pid_t) {
     }
     usleep(120_000)
     if let cursor { CGWarpMouseCursorPosition(cursor) }
-    if let before, before.processIdentifier != pid { forward(before.processIdentifier) }
+    if let before, before != pid { forward(before) }
+}
+
+func nearest(_ point: CGPoint) -> Int? {
+    var best: (Int, CGFloat)?
+    for (index, box) in boxes.enumerated() {
+        guard let box, box.width >= Limit.small, box.height >= Limit.small else { continue }
+        guard box.insetBy(dx: -Limit.reach, dy: -Limit.reach).contains(point) else { continue }
+        let inside: CGFloat = box.contains(point) ? 0 : 1_000_000
+        let score = inside + box.width * box.height
+        if best == nil || score < best!.1 { best = (index, score) }
+    }
+    return best?.0
 }
 
 func strike(_ point: CGPoint, _ pid: pid_t, _ mode: String) {
@@ -581,12 +659,16 @@ func strike(_ point: CGPoint, _ pid: pid_t, _ mode: String) {
 func click(_ request: [String: Any]) throws -> String {
     let mode = request["mode"] as? String ?? ""
     let pid = try front().0.processIdentifier
-    if let name = (request["cell"] as? String)?.uppercased().trimmingCharacters(in: .whitespaces), !name.isEmpty {
-        guard let area = view, let cell = cells(area).first(where: { $0.0 == name }) else {
-            throw Failure(text: "call grid first, then click one of its squares, A1 to F4")
+    var request = request
+    if let x = (request["x"] as? NSNumber)?.doubleValue, let y = (request["y"] as? NSNumber)?.doubleValue {
+        let point = CGPoint(x: pane.minX + pane.width * x, y: pane.minY + pane.height * y)
+        guard pane.contains(point) else { throw Failure(text: "that spot is outside the window") }
+        if let hit = nearest(point) {
+            request["number"] = hit + 1
+        } else {
+            strike(point, pid, mode == "real" ? "real" : "quiet")
+            return "clicked that spot; it is not a control in the list"
         }
-        strike(CGPoint(x: cell.1.midX, y: cell.1.midY), pid, mode)
-        return "clicked the middle of square \(name)"
     }
     let (element, label, box) = try target(request)
     let role = kind(element)
@@ -633,20 +715,7 @@ func stroke(_ code: Int, _ mask: CGEventFlags, _ pid: pid_t) {
     }
 }
 
-func write(_ request: [String: Any]) throws -> String {
-    guard let text = request["text"] as? String, !text.isEmpty else { throw Failure(text: "give the text to type") }
-    let pid = try front().0.processIdentifier
-    var place = "where the cursor is"
-    if request["number"] is NSNumber {
-        let (element, label, box) = try target(request)
-        if AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) != .success,
-            let box
-        {
-            poke(CGPoint(x: box.midX, y: box.midY), pid)
-        }
-        usleep(150_000)
-        place = "into \(label)"
-    }
+func scribe(_ text: String, _ pid: pid_t) {
     let source = CGEventSource(stateID: .hidSystemState)
     borrow(pid) {
         for (index, line) in text.components(separatedBy: "\n").enumerated() {
@@ -669,7 +738,148 @@ func write(_ request: [String: Any]) throws -> String {
             }
         }
     }
-    return "typed \"\(tidy(text, Limit.name))\" \(place)"
+}
+
+func bar(_ window: AXUIElement) -> AXUIElement? {
+    var queue = [window]
+    var seen = 0
+    while !queue.isEmpty && seen < Limit.sought {
+        let node = queue.removeFirst()
+        seen += 1
+        let role = string(node, kAXRoleAttribute) ?? ""
+        if role == "AXTextField" || role == "AXComboBox" { return node }
+        if role == "AXWebArea" || role == "AXMenuBar" { continue }
+        queue.append(contentsOf: elements(node, kAXChildrenAttribute))
+    }
+    return nil
+}
+
+func select(_ field: AXUIElement, _ pid: pid_t) {
+    let had = string(field, kAXValueAttribute) ?? ""
+    if had.isEmpty { return }
+    var all = CFRange(location: 0, length: had.utf16.count)
+    let range = AXValueCreate(.cfRange, &all)
+    if range == nil
+        || AXUIElementSetAttributeValue(field, kAXSelectedTextRangeAttribute as CFString, range!) != .success
+    {
+        borrow(pid) { stroke(kVK_ANSI_A, .maskCommand, pid) }
+    }
+    usleep(Limit.key * 6)
+}
+
+func visit(_ request: [String: Any]) throws -> String {
+    let what = (request["what"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+    let address = what.contains("://") ? what : "https://\(what)"
+    guard let url = URL(string: address), let browser = NSWorkspace.shared.urlForApplication(toOpen: url),
+        let id = Bundle(url: browser)?.bundleIdentifier
+    else { throw Failure(text: "there is no browser to open \(what)") }
+    _ = hold()
+    let find = { apps().first(where: { $0.bundleIdentifier == id }) }
+    guard let running = find() else {
+        let setup = NSWorkspace.OpenConfiguration()
+        setup.activates = false
+        NSWorkspace.shared.open([url], withApplicationAt: browser, configuration: setup, completionHandler: nil)
+        let until = Date().addingTimeInterval(Limit.capture)
+        while Date() < until {
+            usleep(Limit.read)
+            guard let started = find() else { continue }
+            let app = AXUIElementCreateApplication(started.processIdentifier)
+            guard let first = element(app, kAXFocusedWindowAttribute) ?? elements(app, kAXWindowsAttribute).first
+            else { continue }
+            aimed = started.processIdentifier
+            nook = number(first)
+            pinned = nook
+            restore(started.processIdentifier)
+            return "opened \(what)"
+        }
+        throw Failure(text: "the browser did not open")
+    }
+    let pid = running.processIdentifier
+    let app = AXUIElementCreateApplication(pid)
+    wake(pid, app)
+    aimed = pid
+    let windows = { elements(app, kAXWindowsAttribute) }
+    if nook == nil || !windows().contains(where: { number($0) == nook }) {
+        let had = Set(windows().map(number))
+        pinned = nil
+        if let any = window(app), let bounds = frame(any) {
+            pane = bounds
+            pane_id = number(any)
+        }
+        borrow(pid) { stroke(kVK_ANSI_N, .maskCommand, pid) }
+        let until = Date().addingTimeInterval(Limit.build)
+        var made: CGWindowID?
+        while made == nil && Date() < until {
+            usleep(Limit.read)
+            made = windows().map(number).first(where: { !had.contains($0) && $0 != 0 })
+        }
+        restore(pid, true)
+        guard let made else { throw Failure(text: "the browser did not open a window") }
+        nook = made
+    }
+    pinned = nook
+    guard let target = window(app), let bounds = frame(target), bounds.width > 1 else {
+        throw Failure(text: "the browser has no window")
+    }
+    pane = bounds
+    pane_id = number(target)
+    guard let bar = bar(target) else { throw Failure(text: "the browser's address field could not be found") }
+    AXUIElementSetAttributeValue(bar, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    usleep(Limit.read)
+    select(bar, pid)
+    scribe(address, pid)
+    borrow(pid) { stroke(kVK_ForwardDelete, [], pid) }
+    usleep(Limit.read)
+    borrow(pid) { stroke(kVK_Return, [], pid) }
+    return "opened \(what)"
+}
+
+func hold() -> String {
+    held = leader()
+    known = Set(apps().map(\.processIdentifier))
+    return "ready"
+}
+
+func restore(_ pid: pid_t, _ patient: Bool = false) {
+    guard let held, held != pid else { return }
+    let until = Date().addingTimeInterval(known.contains(pid) && !patient ? 0.3 : Limit.build)
+    repeat {
+        if leader() == pid {
+            usleep(Limit.read)
+            forward(held)
+            return
+        }
+        usleep(100_000)
+    } while Date() < until
+}
+
+func write(_ request: [String: Any]) throws -> String {
+    guard let text = request["text"] as? String, !text.isEmpty else { throw Failure(text: "give the text to type") }
+    let pid = try front().0.processIdentifier
+    var place = "where the cursor is"
+    var field: AXUIElement?
+    if request["number"] is NSNumber {
+        let (element, label, box) = try target(request)
+        if AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) != .success,
+            let box
+        {
+            poke(CGPoint(x: box.midX, y: box.midY), pid)
+        }
+        usleep(150_000)
+        place = "into \(label)"
+        field = element
+        if kind(element) != "AXTextArea" { select(element, pid) }
+    }
+    scribe(text, pid)
+    usleep(Limit.read)
+    let said = "typed \"\(tidy(text, Limit.name))\" \(place)"
+    let holder = field ?? element(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute)
+    guard let holder, inputs.contains(kind(holder)), let now = string(holder, kAXValueAttribute) else { return said }
+    let flat = tidy(now, Limit.value)
+    let probe = tidy(text, 24).replacingOccurrences(of: "…", with: "").lowercased()
+    if now.lowercased().contains(probe) || flat.lowercased().contains(probe) { return "\(said). It now contains \"\(flat)\"" }
+    return
+        "\(said), but the text did not go in. It contains \"\(flat)\". Click the control first, or try another way"
 }
 
 func press(_ request: [String: Any]) throws -> String {
@@ -701,7 +911,8 @@ func menu(_ request: [String: Any]) throws -> String {
     guard let path = request["path"] as? String else { throw Failure(text: "give the menu path") }
     let wanted = path.split(separator: ">").map { plain(String($0)) }.filter { !$0.isEmpty }
     guard !wanted.isEmpty else { throw Failure(text: "give the menu path, like File > New Window") }
-    let (_, app) = try front()
+    let (running, app) = try front()
+    let pid = running.processIdentifier
     guard var node = element(app, kAXMenuBarAttribute) else { throw Failure(text: "this app has no menu bar") }
     for (index, name) in wanted.enumerated() {
         var items = elements(node, kAXChildrenAttribute)
@@ -714,19 +925,25 @@ func menu(_ request: [String: Any]) throws -> String {
             throw Failure(text: "there is no \(name) there; the choices are: \(have)")
         }
         if index + 1 == wanted.count {
-            if (attribute(hit, kAXEnabledAttribute) as? Bool) == false {
-                throw Failure(text: "\(path) is turned off right now")
+            var failure: Failure?
+            borrow(pid) {
+                if (attribute(hit, kAXEnabledAttribute) as? Bool) == false {
+                    failure = Failure(text: "\(path) is turned off right now")
+                } else if AXUIElementPerformAction(hit, kAXPressAction as CFString) != .success {
+                    failure = Failure(text: "\(path) could not be chosen")
+                }
             }
-            guard AXUIElementPerformAction(hit, kAXPressAction as CFString) == .success else {
-                throw Failure(text: "\(path) could not be chosen")
-            }
+            if let failure { throw failure }
         }
         node = hit
     }
     return "chose \(path)"
 }
 
+let display = CGMainDisplayID()
+
 func handle(_ request: [String: Any]) throws -> [String: Any] {
+    _ = display
     let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
     guard AXIsProcessTrustedWithOptions(prompt) else {
         throw Failure(
@@ -737,11 +954,14 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     switch request["op"] as? String {
     case "start":
         aimed = nil
-        view = nil
+        pinned = nil
         return ["text": "ready"]
     case "aim": return ["text": try aim(request)]
-    case "look": return try look(request, false)
-    case "grid": return try look(request, true)
+    case "visit": return ["text": try visit(request)]
+    case "hold": return ["text": hold()]
+    case "glance": return try glance()
+    case "closer": return try closer(request)
+    case "look": return try look(request)
     case "click": return ["text": try click(request)]
     case "type": return ["text": try write(request)]
     case "press": return ["text": try press(request)]
