@@ -54,17 +54,15 @@ Rules:
 - When the plan says me, myself or my own, it means the person you work for. Their name is under Known about the person when it is known.
 - Before you finish, check that the latest picture shows the plan is done. Typing in a search box or seeing a result listed is not the same as having opened it. If the picture does not show it, keep going or say it did not work.
 - If you cannot finish after trying, stop and say what got in the way.
+- When the plan asks you to find, read or tell something, and the list or the picture already shows it, you are done: do not click it or open it. Answer from what is shown.
 - When the plan is done, do not call a tool. Write one or two short plain sentences that Milo will say out loud: what was done, or what you found if they asked for information. Take every fact from the screen.";
 
 const POINT: &str = "This is a picture of an app window. Give the bounding box of the thing described below as [ymin, xmin, ymax, xmax], normalized to 0-1000. Reply with only the box. If it is not in the picture, reply with only the word none.\n\n";
 const STUCK: usize = 3;
 const LOOPING: &str = " You have done exactly this before and ended up in the same place. Do not do it again. Do something different, or stop and say what got in the way.";
-const CHECK: &str = "Someone operated a Mac app for a person and now reports that the job is finished. Check the report against the picture and the list of the window as it is now. Judge only from what the picture and the list show. Say no when the window does not show what the report claims, when text ended up in the wrong place or was typed more than once, when a file or a message was not saved or sent though the plan needed it, or when a step of the plan was skipped. A report that honestly says the job failed is fine. Answer yes or no as the first word. After no, add one short sentence that says what is wrong.\n\n";
-const UNDONE: &str = "A check of the window says this is not right: ";
-const REDO: &str = "\nPut it right. If you cannot, say plainly that it did not work and why.";
-const FAILED: &str = "It did not work. ";
 const LISTED: usize = 8;
 const GLIMPSE: &str = "This is a picture of the window on a person's Mac, with a list of what it holds. Answer the question in one to three short plain sentences, only from what is shown.\n\n";
+const WHY: &str = "Write this first. One or two short sentences: what the window shows now, which step of the plan you are on, and why this action is the next one. If the window already shows what the plan asks for, do not call a tool at all: write the answer.";
 const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 
@@ -127,6 +125,11 @@ pub fn halt() -> Result<String> {
 
 fn schema() -> Value {
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
+        let mut all = Map::new();
+        all.insert("why".to_string(), json!({ "type": "string", "description": WHY }));
+        all.extend(properties.as_object().cloned().unwrap_or_default());
+        let properties = Value::Object(all);
+        let required: Vec<&str> = std::iter::once("why").chain(required.iter().copied()).collect();
         json!({
             "type": "function",
             "function": {
@@ -347,19 +350,6 @@ fn changed(before: &Seen, after: &Seen) -> String {
     out
 }
 
-async fn check(llm: &Llm, lead: &str, acted: &[String], said: &str, now: &Seen) -> Option<String> {
-    let image = now.image.as_ref()?;
-    let question = format!(
-        "{CHECK}{lead}\n\nWhat was done:\n{}\n\nThe report: {said}\n\nThe window now, as a list:\n{}",
-        acted.join("\n"),
-        now.text
-    );
-    let answer = llm.see(&question, image).await.ok()?;
-    let answer = answer.trim();
-    let (verdict, rest) = answer.split_once(['.', ',', '\n', ':']).unwrap_or((answer, ""));
-    (verdict.trim().eq_ignore_ascii_case("no") && !rest.trim().is_empty()).then(|| tools::clip(rest.trim()))
-}
-
 async fn step(llm: &Llm, call: &Call, before: &Seen) -> (String, Seen) {
     let text = |key: &str| call.args.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
     let name = call.name.as_str();
@@ -460,8 +450,6 @@ async fn drive(
     let first = Seen { text: before.text.clone(), image: before.image.clone(), print: Vec::new() };
     let mut messages = vec![Message::system(PROMPT), first.message(&lead)];
     let mut typed: Vec<String> = Vec::new();
-    let mut acted: Vec<String> = Vec::new();
-    let mut checked = false;
     let mut done: HashMap<String, Vec<String>> = HashMap::new();
     for _ in 0..MAX_STEPS {
         let waited = Instant::now();
@@ -469,27 +457,9 @@ async fn drive(
             tokio::time::sleep(YIELD_POLL).await;
         }
         let reply = llm.act(&messages, &schema).await?;
-        let Some(call) = reply.calls.into_iter().next() else {
+        let Some(mut call) = reply.calls.into_iter().next() else {
             let said = reply.text.trim().trim_matches('"').trim();
-            let mut said = if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) };
-            if !acted.is_empty() {
-                settle(SETTLE, SETTLED).await;
-                let now = screen().await;
-                keep(&now, &format!("said: {said}"));
-                if let Some(wrong) = check(llm, &lead, &acted, &said, &now).await {
-                    log::info!("check: {wrong}");
-                    if !checked {
-                        checked = true;
-                        messages[1].content.push_str(&format!("\n\n{UNDONE}{wrong}{REDO}"));
-                        messages.retain(|m| m.role != Role::User || m.image.is_none());
-                        messages.push(Message::assistant(said));
-                        messages.push(now.clone().message(""));
-                        before = now;
-                        continue;
-                    }
-                    said = format!("{FAILED}{wrong}");
-                }
-            }
+            let said = if said.is_empty() { format!("finished: {task}") } else { tools::clip(said) };
             let wrote: String = typed.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
             if wrote.is_empty() {
                 return Ok(said);
@@ -497,6 +467,9 @@ async fn drive(
             let wrote: String = wrote.chars().take(TYPED_CHARS).collect();
             return Ok(format!("{said} What you typed: \"{wrote}\""));
         };
+        if let Some(why) = call.args.remove("why").as_ref().and_then(Value::as_str) {
+            log::info!("why: {why}");
+        }
         let _ = events.send(Event::Doing(format!("{} {}", call.name, Value::Object(call.args.clone()))));
         let (mut did, now) = step(llm, &call, &before).await;
         let key = format!("{} {}", call.name, Value::Object(call.args.clone()));
@@ -510,7 +483,6 @@ async fn drive(
             did.push_str(LOOPING);
         }
         log::info!("{} {} -> {did}", call.name, Value::Object(call.args.clone()));
-        acted.push(format!("{} {} -> {}", call.name, Value::Object(call.args.clone()), brief(&did)));
         if call.name == "type" && !did.contains("failed") {
             typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));
         }
