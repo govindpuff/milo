@@ -8,9 +8,7 @@ timers, open apps, use apps for you, and remember what you tell it.
 
 [![The milo panel in the notch asks for approval of a plan](docs/demo.png)](docs/demo.mp4)
 
-To see what milo does, watch the [one-minute demo video](docs/demo.mp4). The video
-is an animation of the panel, and the voices in it come from milo's voice
-engine.
+To see what milo does, watch the [one-minute demo video](docs/demo.mp4).
 
 ## Requirements
 
