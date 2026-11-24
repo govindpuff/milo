@@ -19,12 +19,17 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(45);
 const ASKED: &str = "asked them to approve it on their screen; it runs if they approve";
 const RESULT_CHARS: usize = 700;
+const FILE_SHOWN: usize = 900;
+static PLANS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEWER: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const DONE_KEPT: usize = 4;
 const DONE_CHARS: usize = 90;
 const NOTHING: &str = "nothing was done: the helper has no way to do what they asked. All it can do is: {abilities}. If what they asked is not one of those, tell them plainly that you can't do that. If it is one of those and a detail is missing, ask for the detail";
 const MAX_CALLS: usize = 2;
 const MAX_STEPS: usize = 4;
 const MEMORY_LINES: usize = 60;
+const TURNED: &str =
+    "the helper can do what they just asked after all, and has put it on their screen for them to approve";
 const CONFUSED: &str = "the helper failed: it could not work out the request; ask them to say it again";
 const MAX_TIMER: f64 = 24.0 * 3600.0;
 const YIELD_POLL: Duration = Duration::from_millis(20);
@@ -34,7 +39,9 @@ const DOER_PROMPT: &str = "You work silently beside Milo, who is on a live voice
 Your only job is to notice when the person asks for something one of your tools does, and call that tool.
 
 Rules:
-- Milo cannot do anything itself. Nothing ever happens unless you call a tool, no matter what Milo says in the call.
+- Milo cannot do anything itself. Nothing ever happens unless you call a tool, no matter what Milo says in the call. You alone decide whether something can be done.
+- Use the most direct tool. media pauses, resumes and skips what is playing. close_tab and show_tab handle a browser tab. file writes text into a file, and opens the file in an app when you name one, so when they want something written, call file alone. open brings up an app or a site. Use computer only for what none of those does.
+- When they correct or change what they just asked, call the tool once more with the corrected request in full. It replaces the earlier one.
 - Act on the person's latest message. The earlier lines are only there so you can work out what they mean, like which city or which app.
 - Call a tool when they ask for something a tool does, or ask a question a tool answers, like what the weather is. A request can be casual: can you open chrome, check boston, remind me in five.
 - Already done lists what you did before. If they ask for the same thing again, or say it did not happen, do it again.
@@ -71,6 +78,10 @@ enum Kind {
     Computer,
     Halt,
     See,
+    Media,
+    CloseTab,
+    ShowTab,
+    File,
     Command(Vec<String>),
 }
 
@@ -204,6 +215,44 @@ impl Tools {
                 Kind::Halt,
             ));
         }
+        if notch::on() {
+            list.push(tool(
+                "media",
+                "Pause, stop, resume or skip whatever video or music is playing on the person's computer, in the browser or in an app. Use it whenever they want something that is playing to stop, pause, go on or skip, instead of computer or stop.",
+                "pause, resume or skip a video or music that is playing",
+                json!({ "action": { "type": "string", "enum": ["pause", "play", "next", "previous"] } }),
+                &["action"],
+                Kind::Media,
+            ));
+            list.push(tool(
+                "close_tab",
+                "Close a tab in the person's browser. Use it instead of computer when all they want is a tab closed.",
+                "close a browser tab",
+                json!({ "which": { "type": "string", "description": "A word or two from the tab's title or address, like youtube. Leave it out when they say that tab, this tab or the tab, which means the one that was just worked in or that is showing." } }),
+                &[],
+                Kind::CloseTab,
+            ));
+            list.push(tool(
+                "show_tab",
+                "Bring a tab that is already open in the person's browser to the front.",
+                "switch to a browser tab that is open",
+                json!({ "which": { "type": "string", "description": "A word or two from the tab's title or address, like gmail." } }),
+                &["which"],
+                Kind::ShowTab,
+            ));
+            list.push(tool(
+                "file",
+                "Write a text file on the person's computer, like a note, a list or a short program, and open it in an app if they want. Use it instead of computer whenever they ask for something to be written into a file: it writes the exact text, so nothing has to be typed in a window. You write the whole content yourself.",
+                "write a text file, like a note or a short program, and open it in an app",
+                json!({
+                    "path": { "type": "string", "description": "Where the file goes, under their home folder, like Desktop/hello.py or dev/notes.txt." },
+                    "content": { "type": "string", "description": "The whole text of the file." },
+                    "app": { "type": "string", "description": "An app to open the file in, like Visual Studio Code or TextEdit. Leave it out to only write the file." },
+                }),
+                &["path", "content"],
+                Kind::File,
+            ));
+        }
         match custom() {
             Ok(more) => {
                 for t in more {
@@ -253,10 +302,10 @@ impl Tools {
 
     fn gated(&self, name: &str) -> bool {
         notch::on()
-            && self
-                .list
-                .iter()
-                .any(|t| t.name == name && matches!(t.kind, Kind::Open | Kind::Computer | Kind::Command(_)))
+            && self.list.iter().any(|t| {
+                t.name == name
+                    && matches!(t.kind, Kind::Open | Kind::Computer | Kind::CloseTab | Kind::File | Kind::Command(_))
+            })
     }
 
     async fn attempt(&self, call: &Call) -> Result<String> {
@@ -273,6 +322,19 @@ impl Tools {
                 let question = text(&call.args, "question").unwrap_or_else(|| "What is in this window?".to_string());
                 computer::glimpse(&self.llm, &question).await
             }
+            Kind::Media => computer::media(&text(&call.args, "action").unwrap_or_else(|| "pause".to_string())).await,
+            Kind::ShowTab => {
+                let (tab, title) = computer::pick(&text(&call.args, "which").unwrap_or_default()).await?;
+                computer::shut(&tab, true).await?;
+                Ok(format!("brought the tab {} to the front", clip(&title)))
+            }
+            Kind::CloseTab => {
+                let (tab, title) = computer::pick(&text(&call.args, "which").unwrap_or_default()).await?;
+                allow("Close this tab?", &title).await?;
+                computer::shut(&tab, false).await?;
+                Ok(format!("closed the tab {}", clip(&title)))
+            }
+            Kind::File => file(&call.args).await,
             Kind::Command(argv) => command(t, argv, &call.args).await,
         }
     }
@@ -389,7 +451,19 @@ impl Tools {
             bail!(computer::BUSY);
         }
         let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
-        allow(&task, &plan.join("\n")).await?;
+        let mine = PLANS.fetch_add(1, Relaxed) + 1;
+        NEWER.notify_waiters();
+        let newer = async {
+            while PLANS.load(Relaxed) == mine {
+                NEWER.notified().await;
+            }
+        };
+        if notch::on() {
+            match notch::approve_unless(&task, &plan.join("\n"), APPROVE_TIMEOUT, newer).await {
+                Some(true) => {}
+                _ => return Err(Skipped.into()),
+            }
+        }
         let _claim = computer::claim()?;
         match computer::run(&self.llm, &self.talking, &self.events, &task, &steps).await? {
             Some(said) => Ok(said),
@@ -450,6 +524,39 @@ pub async fn launch(what: &str, behind: bool) -> Result<String> {
         bail!("could not find anything called {what} to open");
     }
     Ok(format!("opened {what}"))
+}
+
+async fn file(args: &Map<String, Value>) -> Result<String> {
+    let given = text(args, "path").ok_or_else(|| anyhow!("they did not say where the file goes"))?;
+    let content = args.get("content").and_then(Value::as_str).unwrap_or_default().to_string();
+    if content.trim().is_empty() {
+        bail!("there is nothing to write; ask them what the file should say");
+    }
+    let inner = given.trim().trim_start_matches("~/").trim_start_matches('/');
+    let home = home_dir()?;
+    let inner = inner.strip_prefix(&format!("{}/", home.to_string_lossy().trim_start_matches('/'))).unwrap_or(inner);
+    let parts: Vec<&str> = inner.split('/').collect();
+    if parts.iter().any(|part| part.is_empty() || *part == ".." || part.starts_with('.')) {
+        bail!("the file has to be a plain path under their home folder");
+    }
+    let path = home.join(inner);
+    let title = if path.exists() { format!("Replace ~/{inner}?") } else { format!("Write ~/{inner}?") };
+    let shown: String = content.chars().take(FILE_SHOWN).collect();
+    allow(&title, &shown).await?;
+    if let Some(folder) = path.parent() {
+        tokio::fs::create_dir_all(folder).await?;
+    }
+    tokio::fs::write(&path, &content).await?;
+    let mut said = format!("wrote ~/{inner}");
+    if let Some(app) = text(args, "app") {
+        let name = computer::installed(&app).await.unwrap_or(app);
+        let opened = tokio::process::Command::new("/usr/bin/open").args(["-a", &name]).arg(&path).output().await;
+        match opened {
+            Ok(out) if out.status.success() => said.push_str(&format!(" and opened it in {name}")),
+            _ => said.push_str(&format!(", but could not open it in {name}")),
+        }
+    }
+    Ok(said)
 }
 
 async fn open(args: &Map<String, Value>) -> Result<String> {
@@ -801,7 +908,7 @@ async fn work(
                 messages.push(Message::tool(&call.id, text));
             }
             if asked {
-                report = last.clone();
+                report = last.clone().or_else(|| (!look.promised).then(|| TURNED.to_string()));
                 break;
             }
             if direct || step + 1 == MAX_STEPS {

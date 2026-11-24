@@ -1116,6 +1116,17 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     case "around": return around()
     case "facing": return ["text": try facing()]
     case "raise": return ["text": try raise()]
+    case "media":
+        let codes: [String: Int] = ["play": 16, "next": 17, "previous": 18]
+        guard let code = codes[request["key"] as? String ?? ""] else { throw Failure(text: "there is no such key") }
+        for down in [true, false] {
+            let event = NSEvent.otherEvent(
+                with: .systemDefined, location: .zero,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: down ? 0xa00 : 0xb00), timestamp: 0, windowNumber: 0,
+                context: nil, subtype: 8, data1: (code << 16) | ((down ? 0xa : 0xb) << 8), data2: -1)
+            event?.cgEvent?.post(tap: .cghidEventTap)
+        }
+        return ["text": "pressed the \(request["key"] as? String ?? "") key"]
     case "aim": return ["text": try aim(request)]
     case "visit": return ["text": try visit(request)]
     case "installed": return ["text": try installed(request)]

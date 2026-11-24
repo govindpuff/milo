@@ -1135,6 +1135,104 @@ pub async fn glimpse(llm: &Llm, question: &str) -> Result<String> {
     Ok(tools::clip(said.trim()))
 }
 
+pub async fn installed(app: &str) -> Option<String> {
+    act(json!({ "op": "installed", "what": app })).await.ok()
+}
+
+pub async fn media(action: &str) -> Result<String> {
+    if running() {
+        bail!(BUSY);
+    }
+    let mut held = SESSION.lock().await;
+    let s = &mut *held;
+    link(s, PEEK, None).await;
+    if let Some(browser) = &s.browser
+        && (action == "pause" || action == "play")
+    {
+        let hit = browser.media(action == "play").await;
+        if !hit.is_empty() {
+            let did = if action == "play" { "resumed" } else { "paused" };
+            return Ok(format!("{did} what was playing in the tab {}", tools::clip(&hit.join(", "))));
+        }
+    }
+    let key = if action == "pause" { "play" } else { action };
+    act(json!({ "op": "media", "key": key })).await.map_err(|e| anyhow!("{e}"))?;
+    Ok(match action {
+        "pause" | "play" => {
+            "pressed the play and pause key, which pauses or resumes whatever app is playing".to_string()
+        }
+        other => format!("pressed the {other} track key"),
+    })
+}
+
+pub async fn pick(which: &str) -> Result<(String, String)> {
+    if running() {
+        bail!(BUSY);
+    }
+    let mut held = SESSION.lock().await;
+    let s = &mut *held;
+    link(s, PEEK, None).await;
+    let Some(browser) = &s.browser else { bail!("{UNLINKED}") };
+    let tabs = browser.tabs().await?;
+    let (_, shown) = facing(s).await;
+    let here = match &s.place {
+        Place::Tab(tab) => Some(tab.clone()),
+        _ => None,
+    };
+    let wanted: Vec<String> = which
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|word| *word != "tab" && *word != "the")
+        .map(str::to_string)
+        .collect();
+    let fits = |tab: &browser::Tab| {
+        let both = format!("{} {}", tab.title, tab.url).to_lowercase();
+        !wanted.is_empty() && wanted.iter().all(|word| both.contains(word))
+    };
+    let mut hits: Vec<&browser::Tab> = tabs.iter().filter(|tab| fits(tab)).collect();
+    if wanted.is_empty() || hits.len() != 1 && wanted.len() <= 1 {
+        let near =
+            |tab: &&browser::Tab| here.as_deref() == Some(tab.id.as_str()) || shown.as_deref() == Some(tab.id.as_str());
+        let pool: Vec<&browser::Tab> = if hits.is_empty() { tabs.iter().collect() } else { hits.clone() };
+        let close: Vec<&browser::Tab> = pool.into_iter().filter(near).collect();
+        let last = close.iter().find(|tab| here.as_deref() == Some(tab.id.as_str())).or(close.first());
+        if let Some(tab) = last {
+            hits = vec![tab];
+        }
+    }
+    match hits.as_slice() {
+        [tab] => Ok((tab.id.clone(), tab.title.clone())),
+        [] => bail!(
+            "no open tab matches that; the open tabs are: {}",
+            tabs.iter().map(|tab| tab.title.as_str()).collect::<Vec<_>>().join("; ")
+        ),
+        many => bail!(
+            "more than one tab matches, so ask them which: {}",
+            many.iter().map(|tab| tab.title.as_str()).collect::<Vec<_>>().join("; ")
+        ),
+    }
+}
+
+pub async fn shut(tab: &str, show: bool) -> Result<()> {
+    let mut held = SESSION.lock().await;
+    let s = &mut *held;
+    let Some(browser) = &s.browser else { bail!("{UNLINKED}") };
+    if show {
+        browser.show(tab).await?;
+        let _ = tools::launch(browser.name(), false).await;
+        s.place = Place::Tab(tab.to_string());
+        return Ok(());
+    }
+    browser.close(tab).await?;
+    if s.place == Place::Tab(tab.to_string()) {
+        s.place = Place::None;
+    }
+    if s.mine.as_deref() == Some(tab) {
+        s.mine = None;
+    }
+    Ok(())
+}
+
 pub fn claim() -> Result<impl Drop> {
     if RUNNING.swap(true, Relaxed) {
         bail!(BUSY);
