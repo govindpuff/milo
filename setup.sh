@@ -63,6 +63,11 @@ if ! command -v rapid-mlx >/dev/null 2>&1; then
   uv tool install rapid-mlx==1.1.0
 fi
 
+if ! command -v imsg >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
+  say "Installing imsg, which sends text messages"
+  brew install steipete/tap/imsg || true
+fi
+
 say "Setting up the voice environment in ~/.cache/milo/venv"
 mkdir -p "$root"
 if [ ! -x "$venv/bin/python" ]; then

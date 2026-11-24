@@ -25,32 +25,11 @@ static NEWER: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const DONE_KEPT: usize = 4;
 const SCRIPTED: Duration = Duration::from_secs(20);
 const PEOPLE_LISTED: usize = 80;
-const PEOPLE: &str = "tell application \"Messages\"
-    set out to \"\"
-    repeat with a in accounts
-        try
-            set kind to (service type of a) as text
-            set held to id of a
-            set names to name of participants of a
-            set handles to handle of participants of a
-            repeat with i from 1 to count of names
-                set out to out & (item i of names) & tab & (item i of handles) & tab & kind & tab & held & linefeed
-            end repeat
-        end try
-    end repeat
-    return out
-end tell";
-const SEND: &str = "on run argv
-    tell application \"Messages\"
-        set a to account id (item 2 of argv)
-        try
-            set who to participant (item 1 of argv) of a
-        on error
-            set who to first participant of a whose handle is (item 1 of argv)
-        end try
-        send (item 3 of argv) to who
-    end tell
-end run";
+const CHATS: &str = "500";
+const IMSG: [&str; 3] = ["/opt/homebrew/bin/imsg", "/usr/local/bin/imsg", "imsg"];
+const NO_CHATS: &str = "imsg could not read any conversations. The terminal app that runs Milo needs Full Disk Access, under Privacy & Security in System Settings";
+const NO_NAMES: &str = "imsg could read the conversations but not the names of the people in them. The terminal app that runs Milo needs access to Contacts, or Full Disk Access, under Privacy & Security in System Settings";
+const NO_IMSG: &str = "nothing was sent: the imsg command is not installed on this Mac. They can install it with: brew install steipete/tap/imsg";
 const DONE_CHARS: usize = 90;
 const NOTHING: &str = "nothing was done: the helper has no way to do what they asked. All it can do is: {abilities}. If what they asked is not one of those, tell them plainly that you can't do that. If it is one of those and a detail is missing, ask for the detail";
 const MAX_CALLS: usize = 2;
@@ -608,72 +587,100 @@ async fn file(args: &Map<String, Value>) -> Result<String> {
     Ok(said)
 }
 
-async fn script(source: &str, args: &[&str]) -> Result<String> {
-    let run = tokio::process::Command::new("/usr/bin/osascript").arg("-e").arg(source).args(args).output();
-    let out = tokio::time::timeout(SCRIPTED, run).await.map_err(|_| anyhow!("Messages did not answer in time"))??;
+async fn imsg(args: &[&str]) -> Result<String> {
+    let bin = IMSG.iter().find(|path| !path.contains('/') || std::path::Path::new(path).exists()).unwrap_or(&IMSG[2]);
+    let run = tokio::process::Command::new(bin).args(args).stdin(std::process::Stdio::null()).output();
+    let out = match tokio::time::timeout(SCRIPTED, run).await {
+        Err(_) => bail!("nothing was sent: Messages did not answer in time"),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!(NO_IMSG),
+        Ok(out) => out?,
+    };
     if !out.status.success() {
-        bail!("Messages would not do it: {}", clip(String::from_utf8_lossy(&out.stderr).trim()));
+        let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let said = if said.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { said };
+        bail!("nothing was sent: imsg failed: {}", clip(&said));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+struct Chat {
+    id: i64,
+    name: String,
+    to: String,
+    service: String,
 }
 
 async fn message(args: &Map<String, Value>) -> Result<String> {
     let to = text(args, "to").ok_or_else(|| anyhow!("they did not say who it is for; ask them"))?;
     let words = text(args, "text").ok_or_else(|| anyhow!("they did not say what it should say; ask them"))?;
-    let listed = script(PEOPLE, &[]).await?;
-    let people: Vec<[&str; 4]> = listed
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split('\t');
-            Some([parts.next()?.trim(), parts.next()?.trim(), parts.next()?.trim(), parts.next()?.trim()])
-        })
-        .filter(|person| !person[0].is_empty() && !person[1].is_empty())
-        .collect();
-    let wanted = to.to_lowercase();
-    let words_of = |name: &str| -> Vec<String> {
+    let listed = imsg(&["chats", "--limit", CHATS, "--json"]).await?;
+    let mut chats: Vec<Chat> = Vec::new();
+    for line in listed.lines() {
+        let Ok(chat) = serde_json::from_str::<Value>(line) else { continue };
+        if chat["is_group"] == true {
+            continue;
+        }
+        let Some(id) = chat["id"].as_i64() else { continue };
+        let field = |key: &str| chat[key].as_str().unwrap_or_default().trim().to_string();
+        let to = field("identifier");
+        let name = [field("contact_name"), field("display_name"), field("name")]
+            .into_iter()
+            .find(|name| !name.is_empty() && *name != to)
+            .unwrap_or_default();
+        if !name.is_empty() {
+            chats.push(Chat { id, name, to, service: field("service") });
+        }
+    }
+    if chats.is_empty() {
+        let seen = listed.lines().filter(|line| line.trim_start().starts_with('{')).count();
+        bail!("nothing was sent: {}", if seen == 0 { NO_CHATS } else { NO_NAMES });
+    }
+    let split = |name: &str| -> Vec<String> {
         name.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
             .filter(|w| !w.is_empty())
             .map(str::to_string)
             .collect()
     };
-    let asked = words_of(&to);
-    let exact: Vec<&[&str; 4]> =
-        people.iter().filter(|person| person[0].to_lowercase() == wanted || person[1] == to).collect();
-    let hits = match exact.is_empty() {
+    let wanted = to.to_lowercase();
+    let asked = split(&to);
+    let exact: Vec<&Chat> = chats.iter().filter(|chat| chat.name.to_lowercase() == wanted).collect();
+    let hits: Vec<&Chat> = match exact.is_empty() {
         false => exact,
-        true => people
+        true => chats
             .iter()
-            .filter(|person| {
-                let have = words_of(person[0]);
+            .filter(|chat| {
+                let have = split(&chat.name);
                 !asked.is_empty() && asked.iter().all(|word| have.contains(word))
             })
             .collect(),
     };
-    let mut names: Vec<&str> = hits.iter().map(|person| person[0]).collect();
+    let mut names: Vec<&str> = hits.iter().map(|chat| chat.name.as_str()).collect();
     names.sort();
     names.dedup();
     let name = match names.as_slice() {
         [name] => *name,
         [] => {
-            let mut all: Vec<&str> =
-                people.iter().map(|person| person[0]).filter(|name| *name != "missing value").collect();
-            all.sort();
-            all.dedup();
+            let mut all: Vec<&str> = Vec::new();
+            for chat in &chats {
+                if !all.contains(&chat.name.as_str()) {
+                    all.push(&chat.name);
+                }
+            }
             all.truncate(PEOPLE_LISTED);
             bail!(
-                "nothing was sent: no one in Messages is saved as {to}. The names there are: {}. If one of them is plainly the person they mean, call message again with that exact name. Otherwise ask them what the person is saved as",
+                "nothing was sent: none of their conversations in Messages is with someone saved as {to}. The people they have conversations with, newest first: {}. If one of them is plainly the person they mean, call message again with that exact name. Otherwise ask them what the person is saved as",
                 all.join("; ")
             );
         }
         many => bail!("nothing was sent: more than one person matches {to}, so ask them which: {}", many.join("; ")),
     };
-    let mine: Vec<&&[&str; 4]> = hits.iter().filter(|person| person[0] == name).collect();
-    let pick = mine.iter().find(|person| person[2].to_lowercase().contains("imessage")).or(mine.first());
-    let Some(person) = pick else { bail!("nothing was sent: {to} could not be found") };
-    allow(&format!("Message {name}?"), &format!("{words}\n\nTo {} by {}", person[1], person[2])).await?;
-    script(SEND, &[person[1], person[3], &words]).await?;
-    Ok(format!("gave Messages the text \"{}\" to send to {name}", clip(&words)))
+    let mine: Vec<&&Chat> = hits.iter().filter(|chat| chat.name == name).collect();
+    let pick = mine.iter().find(|chat| chat.service.eq_ignore_ascii_case("imessage")).or(mine.first());
+    let Some(chat) = pick else { bail!("nothing was sent: {to} could not be found") };
+    allow(&format!("Message {name}?"), &format!("{words}\n\nTo {} by {}", chat.to, chat.service)).await?;
+    imsg(&["send", "--chat-id", &chat.id.to_string(), "--text", &words]).await?;
+    Ok(format!("sent the text \"{}\" to {name}", clip(&words)))
 }
 
 async fn open(args: &Map<String, Value>) -> Result<String> {
