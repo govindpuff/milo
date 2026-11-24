@@ -505,11 +505,19 @@ request is being done after all.
 
 The tool agent uses the most direct tool: `media` for what is playing,
 `close_tab` and `show_tab` for a browser tab, `file` to write text into a file,
+`message` to send a text message,
 `open` for an app or a site, and `computer` only for the rest. `media` pauses
 every playing `video` and `audio` element in every tab over the browser
 connection and marks them, so that `play` resumes the same ones. When nothing
 in the browser was playing, it posts the system play key. A new `computer`
 plan dismisses the approval card of the plan before it.
+
+`message` runs two AppleScript scripts through `osascript`. The first lists
+the name, the handle, and the service of each participant of each Messages
+account. milo matches the name that the tool agent gave against that list,
+and prefers an iMessage handle. If no name matches, the tool returns the names,
+so that the tool agent can call it again with the right one. After you
+approve, the second script sends the text to that participant.
 
 ### Computer use
 

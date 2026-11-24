@@ -53,6 +53,7 @@ To quit, press Control+C.
 - "Set a timer for two minutes."
 - "Open Safari."
 - "Make a new note that says call the dentist."
+- "Text Priya that I'm running late."
 - "Pause that video."
 - "Close the YouTube tab."
 - "Write a hello world Python file on my desktop, and open it in VS Code."
@@ -70,7 +71,8 @@ see what milo is doing, hold the pointer over the panel.
 To mute your microphone, hold the pointer over the panel and click the
 microphone button. To unmute, click the button again.
 
-Before milo opens an app or a website, closes a browser tab, writes a file, or
+Before milo opens an app or a website, closes a browser tab, writes a file,
+sends a text message, or
 runs one of your own tools, the panel shows exactly what it is about to do. To let it run, click **Approve**. To stop it, click
 **Decline**. If you don't answer within 45 seconds, milo doesn't run the
 command.
@@ -144,6 +146,11 @@ For some requests, milo doesn't click through a window at all:
 - **Files.** milo writes the text of a file itself, under your home folder,
   and can open the file in an app. The panel shows the path and the text
   first. milo doesn't run the file.
+- **Text messages.** milo sends a text message through the Messages app
+  without using its window. It finds the person by the name that they are
+  saved under, among the people that you have conversations with. The panel
+  shows the message and the number or address first. The first time, macOS
+  asks whether your terminal can control Messages. Click **Allow**.
 
 ### Websites
 
