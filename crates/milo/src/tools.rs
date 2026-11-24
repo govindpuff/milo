@@ -20,6 +20,7 @@ const APPROVE_TIMEOUT: Duration = Duration::from_secs(45);
 const ASKED: &str = "asked them to approve it on their screen; it runs if they approve";
 const RESULT_CHARS: usize = 700;
 const FILE_SHOWN: usize = 900;
+static UNASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static PLANS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NEWER: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const DONE_KEPT: usize = 4;
@@ -64,6 +65,14 @@ After a tool answers:
 - When you have what they asked for, stop calling tools and write one or two short plain sentences that Milo will say to them: only the facts they asked for, taken from the tool results, nothing else.
 - If the results do not contain what they asked for, say that in one sentence. Never fill a gap from memory.
 - If it could not be done, say what went wrong in one sentence.";
+
+pub fn unasked() {
+    UNASKED.store(true, Relaxed);
+}
+
+fn asking() -> bool {
+    notch::on() && !UNASKED.load(Relaxed)
+}
 
 #[derive(Debug)]
 struct Skipped;
@@ -324,7 +333,7 @@ impl Tools {
     }
 
     fn gated(&self, name: &str) -> bool {
-        notch::on()
+        asking()
             && self.list.iter().any(|t| {
                 t.name == name
                     && matches!(
@@ -486,7 +495,7 @@ impl Tools {
                 NEWER.notified().await;
             }
         };
-        if notch::on() {
+        if asking() {
             match notch::approve_unless(&task, &plan.join("\n"), APPROVE_TIMEOUT, newer).await {
                 Some(true) => {}
                 _ => return Err(Skipped.into()),
@@ -696,7 +705,7 @@ fn shown(cmd: &std::process::Command) -> String {
 }
 
 async fn allow(title: &str, detail: &str) -> Result<()> {
-    if !notch::on() {
+    if !asking() {
         return Ok(());
     }
     match notch::approve(title, detail, APPROVE_TIMEOUT).await {

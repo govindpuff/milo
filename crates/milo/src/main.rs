@@ -152,6 +152,8 @@ struct Args {
     push_to_talk: bool,
     #[arg(long, help = "Don't show the panel in the notch; actions then run without asking")]
     no_notch: bool,
+    #[arg(long, help = "Run every command and plan without asking for approval in the panel")]
+    dangerously_auto_approve: bool,
     #[arg(long, value_name = "FILE", help = "Use the system prompt in FILE instead of the built-in one")]
     system_prompt: Option<PathBuf>,
     #[arg(long, value_name = "NAME", help = "Microphone to use, by name or part of it [default: the system input]")]
@@ -203,6 +205,9 @@ fn main() -> Result<()> {
     }
     if let Some(task) = args.task.clone() {
         return solo(args, &task);
+    }
+    if args.dangerously_auto_approve {
+        tools::unasked();
     }
     if args.no_notch {
         return run(args);
