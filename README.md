@@ -6,9 +6,9 @@ speaking, you can talk over it to interrupt, and it makes small listening
 sounds, such as "mm-hmm," while you talk. It can also check the weather, set
 timers, open apps, use apps for you, and remember what you tell it.
 
-[![The milo panel in the notch asks for approval of a plan](docs/demo.png)](docs/demo.mp4)
+[![A one-minute demo of milo and its panel in the notch](docs/demo.gif)](docs/demo.mp4)
 
-To see what milo does, watch the [one-minute demo video](docs/demo.mp4).
+To hear the voices, watch the [demo video with sound](docs/demo.mp4).
 
 ## Requirements
 
