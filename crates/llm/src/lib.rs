@@ -104,6 +104,7 @@ struct Inner {
     model: String,
     http: reqwest::Client,
     base: String,
+    key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -111,9 +112,15 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [Message],
     stream: bool,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     temperature: f32,
-    chat_template_kwargs: TemplateKwargs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<TemplateKwargs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -128,9 +135,15 @@ struct ActRequest<'a> {
     tools: &'a serde_json::Value,
     tool_choice: &'static str,
     stream: bool,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     temperature: f32,
-    chat_template_kwargs: TemplateKwargs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<TemplateKwargs>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -156,16 +169,44 @@ struct PrefillRequest<'a> {
 }
 
 impl Llm {
-    pub fn new(base_url: &str, model: &str) -> Llm {
+    pub fn new(base_url: &str, model: &str, key: Option<String>) -> Llm {
         let http = reqwest::Client::builder()
             .no_proxy()
             .tcp_nodelay(true)
             .pool_idle_timeout(Duration::from_secs(25))
-            .connect_timeout(Duration::from_secs(2))
+            .connect_timeout(if key.is_some() { FAR } else { NEAR })
             .build()
             .expect("reqwest client");
         let base = base_url.trim_end_matches('/').to_string();
-        Llm { inner: Arc::new(Inner { model: model.to_string(), http, base }) }
+        Llm { inner: Arc::new(Inner { model: model.to_string(), http, base, key }) }
+    }
+
+    fn hosted(&self) -> bool {
+        self.inner.key.is_some()
+    }
+
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        let req = self.inner.http.post(format!("{}/{path}", self.inner.base));
+        match &self.inner.key {
+            Some(key) => req.bearer_auth(key),
+            None => req,
+        }
+    }
+
+    fn local(&self, tokens: u32) -> Option<u32> {
+        (!self.hosted()).then_some(tokens)
+    }
+
+    fn remote(&self, tokens: u32) -> Option<u32> {
+        self.hosted().then_some(tokens.max(LEAST))
+    }
+
+    fn kwargs(&self) -> Option<TemplateKwargs> {
+        (!self.hosted()).then_some(TemplateKwargs { enable_thinking: false })
+    }
+
+    fn effort(&self) -> Option<&'static str> {
+        self.hosted().then_some(EFFORT)
     }
 
     fn chat_request<'a>(&'a self, messages: &'a [Message], stream: bool, max_tokens: u32) -> ChatRequest<'a> {
@@ -173,9 +214,11 @@ impl Llm {
             model: &self.inner.model,
             messages,
             stream,
-            max_tokens,
+            max_tokens: self.local(max_tokens),
+            max_completion_tokens: self.remote(max_tokens),
             temperature: TEMPERATURE,
-            chat_template_kwargs: TemplateKwargs { enable_thinking: false },
+            chat_template_kwargs: self.kwargs(),
+            reasoning_effort: self.effort(),
         }
     }
 
@@ -184,14 +227,7 @@ impl Llm {
         messages: &[Message],
     ) -> Result<impl Stream<Item = Result<String>> + Send + Unpin + use<>> {
         let req = self.chat_request(messages, true, REPLY_TOKENS);
-        let resp = self
-            .inner
-            .http
-            .post(format!("{}/chat/completions", self.inner.base))
-            .json(&req)
-            .send()
-            .await
-            .context("chat completions request")?;
+        let resp = self.post("chat/completions").json(&req).send().await.context("chat completions request")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -205,7 +241,7 @@ impl Llm {
             done: false,
             id: None,
             http: self.inner.http.clone(),
-            base: self.inner.base.clone(),
+            base: (!self.hosted()).then(|| self.inner.base.clone()),
         })
     }
 
@@ -214,9 +250,7 @@ impl Llm {
         let mut req = self.chat_request(&messages, false, SEE_TOKENS);
         req.temperature = 0.0;
         let resp = self
-            .inner
-            .http
-            .post(format!("{}/chat/completions", self.inner.base))
+            .post("chat/completions")
             .header("X-Rapid-Priority", "background")
             .timeout(ACT_TIMEOUT)
             .json(&req)
@@ -236,9 +270,7 @@ impl Llm {
         let mut req = self.chat_request(messages, false, WRITE_TOKENS);
         req.temperature = 0.0;
         let resp = self
-            .inner
-            .http
-            .post(format!("{}/chat/completions", self.inner.base))
+            .post("chat/completions")
             .header("X-Rapid-Priority", "background")
             .timeout(ACT_TIMEOUT)
             .json(&req)
@@ -261,14 +293,14 @@ impl Llm {
             tools,
             tool_choice: "auto",
             stream: false,
-            max_tokens: ACT_TOKENS,
+            max_tokens: self.local(ACT_TOKENS),
+            max_completion_tokens: self.remote(ACT_TOKENS),
             temperature: 0.0,
-            chat_template_kwargs: TemplateKwargs { enable_thinking: false },
+            chat_template_kwargs: self.kwargs(),
+            reasoning_effort: self.effort(),
         };
         let resp = self
-            .inner
-            .http
-            .post(format!("{}/chat/completions", self.inner.base))
+            .post("chat/completions")
             .header("X-Rapid-Priority", "background")
             .timeout(ACT_TIMEOUT)
             .json(&req)
@@ -305,6 +337,9 @@ impl Llm {
     }
 
     pub async fn warm(&self, messages: &[Message]) -> Result<()> {
+        if self.hosted() {
+            return Ok(());
+        }
         if let [m] = messages
             && m.role == Role::System
         {
@@ -322,14 +357,7 @@ impl Llm {
             }
         };
         let req = self.chat_request(messages, false, 1);
-        let resp = self
-            .inner
-            .http
-            .post(format!("{}/chat/completions", self.inner.base))
-            .json(&req)
-            .send()
-            .await
-            .context("warm request")?;
+        let resp = self.post("chat/completions").json(&req).send().await.context("warm request")?;
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !status.is_success() {
@@ -343,6 +371,9 @@ impl Llm {
     }
 
     async fn prefill_prefix(&self, messages: &[Message], tools: Option<&serde_json::Value>) -> Result<()> {
+        if self.hosted() {
+            return Ok(());
+        }
         let req = PrefillRequest { kind: "prefix", messages, tools, enable_thinking: false };
         let resp = self.inner.http.post(format!("{}/cache/prefill", self.inner.base)).json(&req).send().await?;
         let status = resp.status();
@@ -361,6 +392,10 @@ const ACT_TOKENS: u32 = 320;
 const SEE_TOKENS: u32 = 140;
 const WRITE_TOKENS: u32 = 500;
 const ACT_TIMEOUT: Duration = Duration::from_secs(60);
+const NEAR: Duration = Duration::from_secs(2);
+const FAR: Duration = Duration::from_secs(10);
+const LEAST: u32 = 16;
+const EFFORT: &str = "none";
 
 fn parse_call(name: &serde_json::Value, args: &serde_json::Value) -> Option<Call> {
     let name = name.as_str()?.trim();
@@ -418,7 +453,7 @@ struct ChatStream {
     done: bool,
     id: Option<String>,
     http: reqwest::Client,
-    base: String,
+    base: Option<String>,
 }
 
 impl ChatStream {
@@ -513,10 +548,13 @@ impl Drop for ChatStream {
         let Some(id) = self.id.take() else {
             return;
         };
+        let Some(base) = self.base.take() else {
+            return;
+        };
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let req = self.http.post(format!("{}/requests/{id}/cancel", self.base)).timeout(Duration::from_secs(2));
+        let req = self.http.post(format!("{base}/requests/{id}/cancel")).timeout(Duration::from_secs(2));
         rt.spawn(async move {
             let _ = req.send().await;
         });

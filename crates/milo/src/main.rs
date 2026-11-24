@@ -101,6 +101,7 @@ You: [soft] Ah, turns out I can't do that one.
 
 {memory}";
 
+const KEYS: [&str; 2] = ["MILO_LLM_KEY", "OPENAI_API_KEY"];
 const STATUS_POLL: Duration = Duration::from_millis(100);
 const WARMUP_TEXT: &str = "Hello there, I'm ready when you are.";
 
@@ -117,7 +118,7 @@ struct Args {
     port: u16,
     #[arg(
         long,
-        help = "Use any OpenAI-compatible server at this base URL instead of starting Rapid-MLX [default: http://127.0.0.1:{port}/v1]"
+        help = "Use any OpenAI-compatible server at this base URL instead of starting Rapid-MLX; an API key is read from MILO_LLM_KEY or OPENAI_API_KEY [default: http://127.0.0.1:{port}/v1]"
     )]
     llm_url: Option<String>,
     #[arg(
@@ -225,13 +226,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn key(args: &Args) -> Option<String> {
+    args.llm_url.as_ref()?;
+    KEYS.iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|key| key.trim().to_string())
+        .find(|key| !key.is_empty())
+}
+
 fn solo(args: Args, task: &str) -> Result<()> {
     let base_url = args.llm_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{}/v1", args.port));
     let server = match args.llm_url {
         Some(_) => None,
         None => llm::server::ensure_running(&args.model, args.port)?,
     };
-    let llm = Llm::new(&base_url, &args.model);
+    let llm = Llm::new(&base_url, &args.model, key(&args));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let out = rt.block_on(computer::solo(&llm, task, &args.step));
     drop(server);
@@ -336,7 +345,7 @@ fn run(args: Args) -> Result<()> {
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    let llm = Llm::new(&base_url, &args.model);
+    let llm = Llm::new(&base_url, &args.model, key(&args));
     let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
     let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
     let talking = Arc::new(AtomicBool::new(false));
