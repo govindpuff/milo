@@ -512,12 +512,13 @@ connection and marks them, so that `play` resumes the same ones. When nothing
 in the browser was playing, it posts the system play key. A new `computer`
 plan dismisses the approval card of the plan before it.
 
-`message` runs two AppleScript scripts through `osascript`. The first lists
-the name, the handle, and the service of each participant of each Messages
-account. milo matches the name that the tool agent gave against that list,
-and prefers an iMessage handle. If no name matches, the tool returns the names,
-so that the tool agent can call it again with the right one. After you
-approve, the second script sends the text to that participant.
+`message` runs the `imsg` command. `imsg chats --json` lists your
+conversations, each with its number, the name from Contacts, the address, and
+the service. milo leaves out group conversations, matches the name that the
+tool agent gave against the names, and prefers an iMessage conversation. If no
+name matches, the tool returns the names, so that the tool agent can call it
+again with the right one. After you approve, `imsg send --chat-id` sends the
+text to that conversation.
 
 ### Computer use
 

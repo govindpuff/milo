@@ -146,11 +146,16 @@ For some requests, milo doesn't click through a window at all:
 - **Files.** milo writes the text of a file itself, under your home folder,
   and can open the file in an app. The panel shows the path and the text
   first. milo doesn't run the file.
-- **Text messages.** milo sends a text message through the Messages app
-  without using its window. It finds the person by the name that they are
-  saved under, among the people that you have conversations with. The panel
-  shows the message and the number or address first. The first time, macOS
-  asks whether your terminal can control Messages. Click **Allow**.
+- **Text messages.** milo sends a text message with the
+  [imsg](https://github.com/steipete/imsg) command, without using the
+  Messages window. It finds the person by the name that they are saved under,
+  among the people that you have conversations with. The panel shows the
+  message and the number or address first.
+
+  To set this up, install imsg with `brew install steipete/tap/imsg`. In
+  System Settings, go to **Privacy & Security**, and turn on **Full Disk
+  Access** for your terminal app. The first time that milo sends a message,
+  macOS asks whether your terminal can control Messages. Click **Allow**.
 
 ### Websites
 
