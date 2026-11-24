@@ -209,6 +209,29 @@ impl Llm {
         })
     }
 
+    pub async fn see(&self, question: &str, image: &str) -> Result<String> {
+        let messages = [Message::seen(question, Some(image.to_string()))];
+        let mut req = self.chat_request(&messages, false, SEE_TOKENS);
+        req.temperature = 0.0;
+        let resp = self
+            .inner
+            .http
+            .post(format!("{}/chat/completions", self.inner.base))
+            .header("X-Rapid-Priority", "background")
+            .timeout(ACT_TIMEOUT)
+            .json(&req)
+            .send()
+            .await
+            .context("picture request")?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("picture request {status}: {body}");
+        }
+        let body: serde_json::Value = serde_json::from_str(&body).context("picture response")?;
+        Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").trim().to_string())
+    }
+
     pub async fn act(&self, messages: &[Message], tools: &serde_json::Value) -> Result<Reply> {
         let req = ActRequest {
             model: &self.inner.model,
@@ -313,6 +336,7 @@ impl Llm {
 const REPLY_TOKENS: u32 = 1200;
 const TEMPERATURE: f32 = 0.7;
 const ACT_TOKENS: u32 = 320;
+const SEE_TOKENS: u32 = 60;
 const ACT_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn parse_call(name: &serde_json::Value, args: &serde_json::Value) -> Option<Call> {
