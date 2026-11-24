@@ -592,6 +592,24 @@ loop also ends after 30 steps or six minutes, when you click **Stop** on the
 card that shows the last action, or when the tool agent calls its `stop` tool
 because you said to stop. A stopped plan reports nothing.
 
+After each action, the result lists the lines that left the window's list and
+the lines that are new in it, or says that most of the window changed and
+gives the window's title.
+
+When the operator reports that it's done, milo captures the window once more
+and asks the model whether the picture and the list show what the report
+claims. If the answer is no, the operator gets the reason and continues. If
+the answer is no a second time, the result is that the plan didn't work, with
+that reason.
+
+Save and open dialogs run in a separate process, so key events that milo posts
+to the app don't reach them. When typed text doesn't appear in a field, milo
+sets the field's value through Accessibility instead.
+
+The `see` tool of the tool agent captures the same window, and asks the model
+a question about the picture and the list. It runs without approval, and not
+while a plan runs.
+
 milo saves the picture, the list, and the action of each step of the last
 plan in `$TMPDIR/milo-computer`.
 

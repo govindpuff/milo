@@ -117,9 +117,19 @@ For websites, milo opens a window of its own in your default browser, and
 leaves your tabs alone. The browser comes to the front for about a second when
 milo creates that window, and then your app comes back.
 
+Before milo tells you that a plan is done, it checks the window against the
+plan. If the window doesn't show the result, milo tries once to put it right,
+and otherwise tells you that it didn't work and why.
+
 If a permission prompt, a password prompt, or a payment comes up that the plan
 doesn't cover, milo stops and tells you what it asks. milo can't see a window
 that is minimized.
+
+In a save or open dialog, milo can type the file name and choose a folder from
+the **Where** menu. It can't go to a folder that the menu doesn't list.
+
+You can also ask milo what is on your screen. It looks at the window that it
+last worked in, or at the window in front, without asking for approval.
 
 To run one task without the voice, use `--task`, and give each step of the
 plan with `--step`:
