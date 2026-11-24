@@ -97,6 +97,11 @@ To use milo like a walkie-talkie, start it with `milo --push-to-talk`. Your
 microphone starts muted, and milo hears you only while you hold
 Control+Option+Space.
 
+To keep the panel but skip the approval, start milo with
+`milo --dangerously-auto-approve`. milo then opens apps, writes files, sends
+messages, and carries out plans as soon as you ask. The panel still shows what
+milo is doing, and **Stop** still stops a plan.
+
 To turn off the panel, start milo with `milo --no-notch`. milo then runs
 commands without asking, and can't use apps for you.
 
@@ -296,6 +301,7 @@ doesn't support tool calls, add `--no-tools`.
 | `--no-aec` | Turns off echo cancellation. Use it with headphones. |
 | `--push-to-talk` | Starts with your microphone muted. To talk, hold Control+Option+Space. |
 | `--no-notch` | Turns off the panel in the notch. milo then runs commands without asking. |
+| `--dangerously-auto-approve` | Runs every command and plan without asking for approval. The panel stays on. |
 | `--no-tools` | Turns off tools and memory. |
 | `--no-backchannel` | Turns off the listening sounds while you talk. |
 | `--nudge-ms` | How long milo waits in silence before it follows up, in milliseconds. The default is `6000`. To turn off follow-ups, set it to `0`. |
