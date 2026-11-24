@@ -22,7 +22,9 @@ const ARRIVE: Duration = Duration::from_secs(5);
 const STILL: Duration = Duration::from_millis(300);
 const SETTLED: Duration = Duration::from_secs(3);
 const LOADED: Duration = Duration::from_secs(12);
-const SCREEN: &str = "What is there now, as a picture and as a list:\n";
+const SCREEN: &str = "What is there now, as a list:\n";
+const PICTURED: &str = "What is there now, as a picture and as a list:\n";
+const SPARSE: usize = 5;
 const STOP: &str = "stop";
 const MOVED: f64 = 0.8;
 const SPOT: u8 = 8;
@@ -209,7 +211,12 @@ pub fn schema() -> Vec<Value> {
             json!({ "path": { "type": "string", "description": "The menu and the item, like File > New Window." } }),
             &["path"],
         ),
-        tool("look", "While you work on their computer: wait a moment and show the place again.", json!({}), &[]),
+        tool(
+            "look",
+            "While you work on their computer: wait a moment and show the place again, with a picture of it.",
+            json!({}),
+            &[],
+        ),
     ];
     all.push(tool(
         "tab",
@@ -961,8 +968,10 @@ async fn arrive(s: &mut Session) {
     }
 }
 
-fn show(seen: &Seen) {
-    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((seen.text.clone(), seen.image.clone()));
+fn show(seen: &Seen, pictured: bool) {
+    let sparse = seen.text.lines().filter(|line| line.starts_with('[')).count() < SPARSE;
+    let image = seen.image.clone().filter(|_| pictured || sparse);
+    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((seen.text.clone(), image));
 }
 
 fn hide() {
@@ -981,12 +990,13 @@ pub fn compose(history: &[Message]) -> Vec<Message> {
     let mut out = history.to_vec();
     let Some((text, image)) = SHOWN.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return out };
     let image = image.filter(|_| !BLIND.load(Relaxed));
+    let lead = if image.is_some() { PICTURED } else { SCREEN };
     match out.last_mut() {
         Some(last) if last.role == Role::User && last.image.is_none() => {
-            last.content.push_str(&format!("\n\n{SCREEN}{text}"));
+            last.content.push_str(&format!("\n\n{lead}{text}"));
             last.image = image;
         }
-        _ => out.push(Message::seen(format!("{SCREEN}{text}"), image)),
+        _ => out.push(Message::seen(format!("{lead}{text}"), image)),
     }
     out
 }
@@ -1029,7 +1039,7 @@ pub async fn begin(events: &UnboundedSender<Event>, task: &str, steps: &[String]
         }
     }
     keep(&before, &lead);
-    show(&before);
+    show(&before, true);
     s.seen = Some(before);
     s.task = Some(Task { id, name: task.to_string(), show: shown, steps: 0, done: HashMap::new(), briefed });
     EPOCH.fetch_add(1, Relaxed);
@@ -1088,7 +1098,7 @@ pub async fn perform(llm: &Llm, mut call: Call) -> String {
         acted: !["go", "look", "read", "tab"].contains(&call.name.as_str()),
     });
     notch::revise(id, &card(&name, brief(&did)));
-    show(&now);
+    show(&now, wasted || call.name == "look" || did.contains(UNMOVED));
     s.seen = Some(now);
     did
 }
@@ -1101,7 +1111,7 @@ pub async fn refresh() {
     }
     settle(s, SETTLE, SETTLED).await;
     let now = screen(s).await;
-    show(&now);
+    show(&now, false);
     s.seen = Some(now);
 }
 
@@ -1110,7 +1120,7 @@ pub async fn see() -> Result<String> {
     let s = &mut *held;
     if s.task.is_some() {
         let now = screen(s).await;
-        show(&now);
+        show(&now, true);
         s.seen = Some(now);
         return Ok("The place you are working in is shown below again".to_string());
     }
@@ -1137,7 +1147,7 @@ pub async fn see() -> Result<String> {
     if seen.image.is_none() && seen.text.trim().is_empty() {
         bail!("there is no window to look at");
     }
-    show(&seen);
+    show(&seen, true);
     Ok(FRONT.to_string())
 }
 
