@@ -70,6 +70,7 @@ enum Kind {
     Forget,
     Computer,
     Halt,
+    See,
     Command(Vec<String>),
 }
 
@@ -187,6 +188,14 @@ impl Tools {
                 Kind::Computer,
             ));
             list.push(tool(
+                "see",
+                "Look at the window on the person's screen and answer a question about it. Use it when they ask what is on their screen, ask you to look at it, or say that something there is wrong.",
+                "look at the window on their screen and say what is there",
+                json!({ "question": { "type": "string", "description": "What to find out, like What is in this window and is anything wrong." } }),
+                &[],
+                Kind::See,
+            ));
+            list.push(tool(
                 "stop",
                 "Stop what is being done on the person's computer right now. Use it when they say to stop, cancel or never mind, or that it is not working, while something is still being done there.",
                 "stop what is being done on their computer",
@@ -260,6 +269,10 @@ impl Tools {
             Kind::Forget => forget(&call.args),
             Kind::Computer => self.computer(&call.args).await,
             Kind::Halt => computer::halt(),
+            Kind::See => {
+                let question = text(&call.args, "question").unwrap_or_else(|| "What is in this window?".to_string());
+                computer::glimpse(&self.llm, &question).await
+            }
             Kind::Command(argv) => command(t, argv, &call.args).await,
         }
     }

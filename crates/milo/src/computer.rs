@@ -64,6 +64,7 @@ const UNDONE: &str = "A check of the window says this is not right: ";
 const REDO: &str = "\nPut it right. If you cannot, say plainly that it did not work and why.";
 const FAILED: &str = "It did not work. ";
 const LISTED: usize = 8;
+const GLIMPSE: &str = "This is a picture of the window on a person's Mac, with a list of what it holds. Answer the question in one to three short plain sentences, only from what is shown.\n\n";
 const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 
@@ -542,6 +543,18 @@ pub async fn solo(llm: &Llm, task: &str, steps: &[String]) -> Result<String> {
         Ok(out) => out,
         Err(_) => Err(anyhow!("it took too long and was stopped before finishing {task}")),
     }
+}
+
+pub async fn glimpse(llm: &Llm, question: &str) -> Result<String> {
+    if running() {
+        bail!(BUSY);
+    }
+    let answer = control(json!({ "op": "look" })).await.map_err(|e| anyhow!("{e}"))?;
+    let seen = Seen::from(&answer);
+    let Some(image) = &seen.image else { bail!("there is no window to look at") };
+    let said =
+        llm.see(&format!("{GLIMPSE}{question}\n\nWhat the window holds, as a list:\n{}", seen.text), image).await?;
+    Ok(tools::clip(said.trim()))
 }
 
 pub fn claim() -> Result<impl Drop> {
