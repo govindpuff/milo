@@ -186,19 +186,80 @@ func front() throws -> (NSRunningApplication, AXUIElement) {
         wake(aimed, app)
         return (running, app)
     }
-    let system = AXUIElementCreateSystemWide()
-    var pid: pid_t = 0
-    if let focused = element(system, kAXFocusedApplicationAttribute) {
-        AXUIElementGetPid(focused, &pid)
+    throw Failure(text: "no app has been opened yet; start with open")
+}
+
+func parent(_ pid: pid_t) -> pid_t {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&name, 4, &info, &size, nil, 0) == 0, size > 0 else { return 0 }
+    return info.kp_eproc.e_ppid
+}
+
+func host() -> pid_t? {
+    let regular = Set(apps().filter { $0.activationPolicy == .regular }.map(\.processIdentifier))
+    var pid = getpid()
+    for _ in 0..<Limit.listed {
+        if regular.contains(pid) { return pid }
+        pid = parent(pid)
+        if pid <= 1 { return nil }
     }
-    let running = NSRunningApplication(processIdentifier: pid) ?? NSWorkspace.shared.frontmostApplication
-    guard let running, running.activationPolicy == .regular else {
-        throw Failure(text: "no app has been opened yet; start with open")
+    return nil
+}
+
+func around() -> [String: Any] {
+    let ahead = leader()
+    let home = host()
+    var out: [[String: Any]] = []
+    for running in apps() where running.activationPolicy == .regular {
+        let pid = running.processIdentifier
+        let app = AXUIElementCreateApplication(pid)
+        let main = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute)
+        let count = elements(app, kAXWindowsAttribute).count
+        if count == 0 && pid != ahead { continue }
+        out.append([
+            "name": running.localizedName ?? "",
+            "front": pid == ahead,
+            "host": pid == home,
+            "aimed": pid == aimed,
+            "title": tidy(main.flatMap { string($0, kAXTitleAttribute) }, Limit.name),
+        ])
     }
-    aimed = running.processIdentifier
-    let app = AXUIElementCreateApplication(running.processIdentifier)
-    wake(running.processIdentifier, app)
-    return (running, app)
+    return ["text": "", "apps": out]
+}
+
+func facing() throws -> String {
+    guard let pid = leader(), let running = NSRunningApplication(processIdentifier: pid),
+        running.activationPolicy == .regular
+    else { throw Failure(text: "there is no window in front to look at") }
+    aimed = pid
+    pinned = nil
+    return running.localizedName ?? ""
+}
+
+func kept() -> [String: Any] {
+    guard let pid = aimed, let running = NSRunningApplication(processIdentifier: pid), !running.isTerminated else {
+        aimed = nil
+        pinned = nil
+        return ["text": ""]
+    }
+    let app = AXUIElementCreateApplication(pid)
+    if let had = pinned, !elements(app, kAXWindowsAttribute).contains(where: { number($0) == had }) {
+        aimed = nil
+        pinned = nil
+        return ["text": ""]
+    }
+    return ["text": running.localizedName ?? ""]
+}
+
+func raise() throws -> String {
+    let (running, app) = try front()
+    if let target = window(app) {
+        AXUIElementPerformAction(target, kAXRaiseAction as CFString)
+    }
+    forward(running.processIdentifier)
+    return "brought \(running.localizedName ?? "it") to the front"
 }
 
 func number(_ window: AXUIElement) -> CGWindowID {
@@ -1041,10 +1102,14 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
         )
     }
     switch request["op"] as? String {
-    case "start":
+    case "start": return kept()
+    case "drop":
         aimed = nil
         pinned = nil
         return ["text": "ready"]
+    case "around": return around()
+    case "facing": return ["text": try facing()]
+    case "raise": return ["text": try raise()]
     case "aim": return ["text": try aim(request)]
     case "visit": return ["text": try visit(request)]
     case "installed": return ["text": try installed(request)]
@@ -1052,6 +1117,14 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     case "glance": return try glance()
     case "closer": return try closer(request)
     case "look": return try look(request)
+    case "peek":
+        let (was, held) = (aimed, pinned)
+        defer {
+            aimed = was
+            pinned = held
+        }
+        _ = try facing()
+        return try look(request)
     case "click": return ["text": try click(request)]
     case "type": return ["text": try write(request)]
     case "press": return ["text": try press(request)]

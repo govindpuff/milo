@@ -22,6 +22,9 @@ fn main() {
                     *image = Value::from(format!("{} bytes", image.as_str().map_or(0, str::len)));
                 }
                 println!("{}", answer["text"].as_str().unwrap_or_default());
+                if let Some(apps) = answer.get("apps") {
+                    println!("{apps}");
+                }
                 println!("image: {}", answer["image"]);
             }
             Err(text) => println!("FAILED: {text}"),
