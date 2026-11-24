@@ -123,6 +123,18 @@ struct Args {
     llm_url: Option<String>,
     #[arg(
         long,
+        default_value = "chat",
+        value_parser = ["chat", "responses"],
+        hide_possible_values = true,
+        help = "API of the --llm-url server: chat (chat completions) or responses (the OpenAI Responses API)"
+    )]
+    llm_api: String,
+    #[arg(long, value_name = "EFFORT", help = "Reasoning effort to ask the --llm-url server for, such as none or low")]
+    llm_effort: Option<String>,
+    #[arg(long, value_name = "TIER", help = "Service tier to ask the --llm-url server for, such as priority")]
+    llm_tier: Option<String>,
+    #[arg(
+        long,
         default_value = "breeze",
         value_parser = ["breeze", "phonon"],
         hide_possible_values = true,
@@ -226,12 +238,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn key(args: &Args) -> Option<String> {
-    args.llm_url.as_ref()?;
-    KEYS.iter()
+fn host(args: &Args) -> llm::Host {
+    if args.llm_url.is_none() {
+        return llm::Host::default();
+    }
+    let key = KEYS
+        .iter()
         .filter_map(|name| std::env::var(name).ok())
         .map(|key| key.trim().to_string())
-        .find(|key| !key.is_empty())
+        .find(|key| !key.is_empty());
+    llm::Host {
+        key,
+        responses: args.llm_api == "responses",
+        effort: args.llm_effort.clone(),
+        tier: args.llm_tier.clone(),
+    }
 }
 
 fn solo(args: Args, task: &str) -> Result<()> {
@@ -240,7 +261,7 @@ fn solo(args: Args, task: &str) -> Result<()> {
         Some(_) => None,
         None => llm::server::ensure_running(&args.model, args.port)?,
     };
-    let llm = Llm::new(&base_url, &args.model, key(&args));
+    let llm = Llm::new(&base_url, &args.model, host(&args));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let out = rt.block_on(computer::solo(&llm, task, &args.step));
     drop(server);
@@ -345,7 +366,7 @@ fn run(args: Args) -> Result<()> {
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    let llm = Llm::new(&base_url, &args.model, key(&args));
+    let llm = Llm::new(&base_url, &args.model, host(&args));
     let listed: Vec<String> = sounds.iter().take(5).map(|s| format!("({s})")).collect();
     let listed = if listed.is_empty() { "(laugh) (sigh)".to_string() } else { listed.join(" ") };
     let talking = Arc::new(AtomicBool::new(false));
