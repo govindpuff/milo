@@ -3,7 +3,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
-use llm::{Api, Host, Llm};
+use llm::{Api, Host, Llm, Price};
 use serde_json::{Map, Value, json};
 
 pub const LOCAL: &str = "local";
@@ -43,6 +43,83 @@ const KNOWN: &[Known] = &[
     known("ollama", "http://127.0.0.1:11434/v1", ""),
     known("lmstudio", "http://127.0.0.1:1234/v1", ""),
 ];
+
+struct Rate {
+    model: &'static str,
+    input: f64,
+    cached: f64,
+    output: f64,
+    fast: f64,
+}
+
+const fn rate(model: &'static str, input: f64, cached: f64, output: f64, fast: f64) -> Rate {
+    Rate { model, input, cached, output, fast }
+}
+
+const RATES: &[Rate] = &[
+    rate("gpt-6.2-astra", 8.0, 0.4, 40.0, 2.0),
+    rate("gpt-6.2-sol", 2.0, 0.1, 10.0, 2.0),
+    rate("gpt-6-astra", 10.0, 1.0, 50.0, 2.0),
+    rate("gpt-6.1-sol", 2.0, 0.1, 10.0, 2.0),
+    rate("gpt-6.1-terra", 1.0, 0.05, 5.0, 2.0),
+    rate("gpt-6-luna", 0.1, 0.01, 0.5, 2.0),
+    rate("gpt-6-sol", 2.0, 0.2, 10.0, 2.0),
+    rate("gpt-5.6-sol", 4.0, 0.4, 20.0, 2.0),
+    rate("gpt-5.6-terra", 2.0, 0.2, 12.0, 2.0),
+    rate("gpt-5.6-luna", 0.2, 0.02, 1.2, 2.0),
+    rate("gpt-5.5", 5.0, 0.5, 30.0, 2.5),
+    rate("gpt-5.5-pro", 30.0, 30.0, 180.0, 1.0),
+    rate("gpt-5.4", 2.5, 0.25, 15.0, 2.0),
+    rate("gpt-5.4-pro", 30.0, 30.0, 180.0, 1.0),
+    rate("gpt-5.4-mini", 0.75, 0.075, 4.5, 2.0),
+    rate("gpt-5.4-nano", 0.2, 0.02, 1.25, 1.0),
+    rate("gpt-5.2", 1.75, 0.175, 14.0, 2.0),
+    rate("gpt-5.2-pro", 21.0, 21.0, 168.0, 1.0),
+    rate("gpt-5.1", 1.25, 0.125, 10.0, 2.0),
+    rate("gpt-5", 1.25, 0.125, 10.0, 2.0),
+    rate("gpt-5-mini", 0.25, 0.025, 2.0, 1.8),
+    rate("gpt-5-nano", 0.05, 0.005, 0.4, 1.0),
+    rate("gpt-5-pro", 15.0, 15.0, 120.0, 1.0),
+    rate("gpt-4.1", 2.0, 0.5, 8.0, 1.75),
+    rate("gpt-4.1-mini", 0.4, 0.1, 1.6, 1.75),
+    rate("gpt-4o", 2.5, 1.25, 10.0, 1.7),
+    rate("gpt-4o-mini", 0.15, 0.075, 0.6, 5.0 / 3.0),
+    rate("o3-pro", 20.0, 20.0, 80.0, 1.0),
+    rate("o3", 2.0, 0.5, 8.0, 1.75),
+    rate("chat-latest", 5.0, 0.5, 30.0, 1.0),
+    rate("gpt-5.3-codex", 1.75, 0.175, 14.0, 2.0),
+    rate("gpt-6.2-astra-healthcare", 8.0, 0.4, 40.0, 2.0),
+    rate("gpt-6.2-sol-healthcare", 2.0, 0.1, 10.0, 2.0),
+    rate("gpt-6-astra-healthcare", 10.0, 1.0, 50.0, 2.0),
+    rate("gpt-6.1-sol-healthcare", 2.0, 0.1, 10.0, 2.0),
+];
+
+const ULTRAFAST: f64 = 6.0;
+const PROMOTED: f64 = 3.0;
+const PROMOTION_ENDS: (i16, i8, i8) = (2027, 3, 1);
+const REGIONAL: f64 = 1.1;
+const HALF: f64 = 0.5;
+
+fn listed(url: &str, model: &str, tier: Option<&str>) -> Option<Price> {
+    let host = url.split_once("://").map_or(url, |(_, rest)| rest).split('/').next().unwrap_or_default();
+    if !host.ends_with("openai.com") {
+        return None;
+    }
+    let rate = RATES.iter().find(|rate| rate.model == model)?;
+    let today = jiff::Zoned::now().date();
+    let promoted = today < jiff::civil::date(PROMOTION_ENDS.0, PROMOTION_ENDS.1, PROMOTION_ENDS.2);
+    let tier = match tier {
+        Some("priority" | "fast") => rate.fast,
+        Some("flex") => HALF,
+        Some("ultrafast") if model.starts_with("gpt-6.2") && promoted => PROMOTED,
+        Some("ultrafast") => ULTRAFAST,
+        _ => 1.0,
+    };
+    let recent = model.starts_with("gpt-6") || model.starts_with("gpt-5.6");
+    let region = if host != "api.openai.com" && recent { REGIONAL } else { 1.0 };
+    let by = tier * region;
+    Some(Price { input: rate.input * by, cached: rate.cached * by, output: rate.output * by })
+}
 
 pub struct Chosen {
     pub name: String,
@@ -173,7 +250,12 @@ impl Config {
         options.extend(own["options"].as_object().cloned().unwrap_or_default());
         let limit = set["limit"].as_str().or(known.and_then(|known| known.limit)).map(str::to_string);
         let rapid = id == LOCAL;
-        let host = Host { key, api, rapid, limit, headers, options };
+        let number = |key: &str| own["price"][key].as_f64();
+        let price = match (number("input"), number("output")) {
+            (Some(input), Some(output)) => Some(Price { input, cached: number("cached").unwrap_or(input), output }),
+            _ => listed(&url, model, options.get("service_tier").and_then(Value::as_str)),
+        };
+        let host = Host { key, api, rapid, limit, price, headers, options };
         Ok(Chosen {
             name: format!("{id}/{model}"),
             llm: Llm::new(&url, model, host),

@@ -333,6 +333,9 @@ fn solo(args: Args, task: &str) -> Result<()> {
         tools::solo(&models.main.llm, tools, &system, task, &args.step).await
     });
     drop(server);
+    if let Some(line) = tools::bill(llm::Spent::default()) {
+        eprintln!("{line}");
+    }
     println!("{}", out?);
     Ok(())
 }

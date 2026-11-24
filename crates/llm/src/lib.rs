@@ -3,7 +3,7 @@ pub mod server;
 
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -136,12 +136,49 @@ pub enum Api {
     Responses,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Price {
+    pub input: f64,
+    pub cached: f64,
+    pub output: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Spent {
+    pub input: u64,
+    pub cached: u64,
+    pub output: u64,
+    pub cost: f64,
+    pub priced: bool,
+}
+
+static METER: Mutex<Spent> = Mutex::new(Spent { input: 0, cached: 0, output: 0, cost: 0.0, priced: false });
+
+pub fn spent() -> Spent {
+    *METER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn meter(used: (u64, u64, u64), price: Option<Price>) {
+    let (input, cached, output) = used;
+    let cached = cached.min(input);
+    let mut total = METER.lock().unwrap_or_else(|e| e.into_inner());
+    total.input += input;
+    total.cached += cached;
+    total.output += output;
+    if let Some(price) = price {
+        total.priced = true;
+        total.cost +=
+            ((input - cached) as f64 * price.input + cached as f64 * price.cached + output as f64 * price.output) / 1e6;
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Host {
     pub key: Option<String>,
     pub api: Api,
     pub rapid: bool,
     pub limit: Option<String>,
+    pub price: Option<Price>,
     pub headers: Vec<(String, String)>,
     pub options: Map<String, Value>,
 }
@@ -264,6 +301,9 @@ impl Llm {
             (false, Some(limit)) => body[limit.as_str()] = (tokens + ROOM).into(),
             (false, None) => body["max_tokens"] = (tokens + ROOM).into(),
         }
+        if stream && !self.rapid() {
+            body["stream_options"] = json!({ "include_usage": true });
+        }
         if let Some(tools) = tools {
             body["tools"] = tools.clone();
             body["tool_choice"] = "auto".into();
@@ -315,6 +355,8 @@ impl Llm {
             http: self.inner.http.clone(),
             base: self.rapid().then(|| self.inner.base.clone()),
             events: self.inner.host.api == Api::Responses,
+            used: None,
+            price: self.inner.host.price,
         })
     }
 
@@ -489,6 +531,8 @@ struct ChatStream {
     http: reqwest::Client,
     base: Option<String>,
     events: bool,
+    used: Option<(u64, u64, u64)>,
+    price: Option<Price>,
 }
 
 impl ChatStream {
@@ -537,7 +581,18 @@ impl ChatStream {
                 let field = |key: &str| item[key].as_str().unwrap_or_default().to_string();
                 self.calls.push(Partial { id: field("call_id"), name: field("name"), args: field("arguments") });
             }
-            Some("response.completed" | "response.incomplete") => self.close(),
+            Some("response.completed" | "response.incomplete") => {
+                let usage = &event["response"]["usage"];
+                if usage.is_object() {
+                    let count = |value: &Value| value.as_u64().unwrap_or(0);
+                    self.used = Some((
+                        count(&usage["input_tokens"]),
+                        count(&usage["input_tokens_details"]["cached_tokens"]),
+                        count(&usage["output_tokens"]),
+                    ));
+                }
+                self.close();
+            }
             Some("error" | "response.failed") => self.fail(event),
             _ => {}
         }
@@ -592,6 +647,15 @@ impl ChatStream {
         if self.id.is_none() {
             self.id = chunk["id"].as_str().map(str::to_string);
         }
+        let usage = &chunk["usage"];
+        if usage.is_object() {
+            let count = |value: &Value| value.as_u64().unwrap_or(0);
+            self.used = Some((
+                count(&usage["prompt_tokens"]),
+                count(&usage["prompt_tokens_details"]["cached_tokens"]),
+                count(&usage["completion_tokens"]),
+            ));
+        }
         for choice in chunk["choices"].as_array().into_iter().flatten() {
             let delta = &choice["delta"];
             if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
@@ -641,6 +705,9 @@ impl Stream for ChatStream {
 
 impl Drop for ChatStream {
     fn drop(&mut self) {
+        if let Some(used) = self.used.take() {
+            meter(used, self.price);
+        }
         if self.done {
             return;
         }

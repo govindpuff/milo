@@ -203,6 +203,7 @@ pub struct Controller {
     history: Vec<Message>,
     trimming: bool,
     turn: Option<Turn>,
+    billed: llm::Spent,
     heard: Option<Heard>,
     voice_reset: turn::Reset,
     voice_seq: u64,
@@ -250,6 +251,7 @@ impl Controller {
             history,
             trimming: false,
             turn: None,
+            billed: llm::spent(),
             heard: None,
             voice_reset,
             voice_seq: 0,
@@ -410,6 +412,13 @@ impl Controller {
             false,
             tools,
         ));
+    }
+
+    fn bill(&mut self) {
+        if let Some(line) = crate::tools::bill(self.billed) {
+            self.dim_line(&line);
+        }
+        self.billed = llm::spent();
     }
 
     fn halt(&mut self) {
@@ -1032,6 +1041,7 @@ impl Controller {
             log::debug!("audio ran dry {}x, {}ms in total", gaps.0 - self.gaps.0, gaps.1 - self.gaps.1);
         }
         self.gaps = gaps;
+        self.bill();
         if t.epoch == computer::epoch()
             && let Some(tools) = &self.settings.tools
         {
@@ -1065,6 +1075,7 @@ impl Controller {
         if let (Some(onset), false) = (t.onset, t.metrics_printed) {
             self.dim_line(&metrics(&t, onset));
         }
+        self.bill();
         if heard.is_empty() {
             self.dim_line("(interrupted)");
         } else {

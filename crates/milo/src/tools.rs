@@ -883,6 +883,26 @@ pub fn shorten(history: &mut [Message]) {
     }
 }
 
+fn count(tokens: u64) -> String {
+    match tokens {
+        0..1000 => tokens.to_string(),
+        _ => format!("{:.1}k", tokens as f64 / 1000.0),
+    }
+}
+
+pub fn bill(before: llm::Spent) -> Option<String> {
+    let now = llm::spent();
+    if now.input + now.output == 0 {
+        return None;
+    }
+    let tokens =
+        format!("{} in ({} cached), {} out this session", count(now.input), count(now.cached), count(now.output));
+    Some(match now.priced {
+        true => format!("cost ${:.4} this turn, ${:.4} this session | {tokens}", now.cost - before.cost, now.cost),
+        false => format!("tokens {tokens}"),
+    })
+}
+
 pub fn brief(text: &str) -> String {
     let line = text.lines().next().unwrap_or_default();
     match line.chars().count() > SHOWN {
