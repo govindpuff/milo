@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::{Duration, Instant};
@@ -38,7 +39,7 @@ Rules:
 - Numbers change after every action. Only use numbers from the latest list.
 - Do what the plan says and nothing else. Do not add steps of your own.
 - open brings up an app by name or a website by address, and makes it the window you work in. Start with open unless the window you need is already the one shown. When a web address can take you straight to what the plan needs, like a site's search results for some words, open that address instead of clicking through the site.
-- click presses a control. Give its number from the list. When the thing you need is in the picture but not in the list, give what instead: a few words that say what it looks like and where it is.
+- click presses a control. Give its number from the list. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
 - type types text, into a control if you give its number, otherwise where the cursor is. Typing into a text field replaces what was in it. Typing into a text area adds to what is there. The result tells you what the control contains afterward.
 - press sends keys to the app, like return, escape, tab, down, pagedown, cmd+n or cmd+f. Press pagedown to see further down a page.
 - menu picks from the app's menu bar, like File > New Window. It is the surest way to do something an app has a menu item for.
@@ -52,6 +53,8 @@ Rules:
 - When the plan is done, do not call a tool. Write one or two short plain sentences that Milo will say out loud: what was done, or what you found if they asked for information. Take every fact from the screen.";
 
 const POINT: &str = "This is a picture of an app window. Give the bounding box of the thing described below as [ymin, xmin, ymax, xmax], normalized to 0-1000. Reply with only the box. If it is not in the picture, reply with only the word none.\n\n";
+const STUCK: usize = 3;
+const LOOPING: &str = " You have done exactly this before and ended up in the same place. Do not do it again. Do something different, or stop and say what got in the way.";
 const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 
@@ -245,7 +248,12 @@ async fn find(llm: &Llm, what: &str, image: &str) -> Option<(f64, f64)> {
 async fn click(llm: &Llm, call: &Call, before: &Seen) -> (Result<String, String>, Seen) {
     let what = call.args.get("what").and_then(Value::as_str).unwrap_or_default().trim().to_string();
     let mut spot = None;
-    if whole(&call.args).is_none() && !what.is_empty() {
+    let number = whole(&call.args).filter(|number| {
+        let tag = format!("[{number}] ");
+        let line = before.text.lines().find(|line| line.starts_with(&tag)).unwrap_or_default().to_lowercase();
+        what.is_empty() || line.contains(&what.to_lowercase())
+    });
+    if number.is_none() && !what.is_empty() {
         let Some(image) = &before.image else {
             return (Err("there is no picture to find it in".to_string()), screen().await);
         };
@@ -258,7 +266,7 @@ async fn click(llm: &Llm, call: &Call, before: &Seen) -> (Result<String, String>
     for mode in ["", "quiet", "real"] {
         let request = match spot {
             Some((x, y)) => json!({ "op": "click", "x": x, "y": y, "mode": mode }),
-            None => json!({ "op": "click", "number": whole(&call.args), "mode": mode }),
+            None => json!({ "op": "click", "number": number, "mode": mode }),
         };
         match act(request).await {
             Ok(text) => did = Ok(text),
@@ -369,6 +377,7 @@ async fn drive(
     let first = Seen { text: before.text.clone(), image: before.image.clone(), print: Vec::new() };
     let mut messages = vec![Message::system(PROMPT), first.message(&lead)];
     let mut typed: Vec<String> = Vec::new();
+    let mut done: HashMap<String, Vec<String>> = HashMap::new();
     for _ in 0..MAX_STEPS {
         let waited = Instant::now();
         while talking.load(Relaxed) && waited.elapsed() < YIELD_MAX {
@@ -386,7 +395,17 @@ async fn drive(
             return Ok(format!("{said} What you typed: \"{wrote}\""));
         };
         let _ = events.send(Event::Doing(format!("{} {}", call.name, Value::Object(call.args.clone()))));
-        let (did, now) = step(llm, &call, &before).await;
+        let (mut did, now) = step(llm, &call, &before).await;
+        let key = format!("{} {}", call.name, Value::Object(call.args.clone()));
+        let ended = done.entry(key).or_default();
+        let again = ended.iter().filter(|text| **text == now.text).count();
+        ended.push(now.text.clone());
+        if again >= STUCK {
+            bail!("it kept repeating the same step without getting anywhere and was stopped before finishing {task}");
+        }
+        if again >= 1 {
+            did.push_str(LOOPING);
+        }
         log::info!("{} {} -> {did}", call.name, Value::Object(call.args.clone()));
         if call.name == "type" && !did.contains("failed") {
             typed.extend(call.args.get("text").and_then(Value::as_str).map(str::to_string));

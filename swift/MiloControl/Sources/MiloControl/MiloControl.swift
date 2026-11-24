@@ -25,7 +25,6 @@ enum Limit {
     static let capture = 6.0
     static let launch = 4.0
     static let small: CGFloat = 5
-    static let reach: CGFloat = 10
     static let closer: CGFloat = 3
     static let build = 3.0
     static let brief: Float = 0.3
@@ -640,16 +639,27 @@ func tap(_ point: CGPoint, _ pid: pid_t) {
     if let before, before != pid { forward(before) }
 }
 
-func nearest(_ point: CGPoint) -> Int? {
-    var best: (Int, CGFloat)?
-    for (index, box) in boxes.enumerated() {
-        guard let box, box.width >= Limit.small, box.height >= Limit.small else { continue }
-        guard box.insetBy(dx: -Limit.reach, dy: -Limit.reach).contains(point) else { continue }
-        let inside: CGFloat = box.contains(point) ? 0 : 1_000_000
-        let score = inside + box.width * box.height
-        if best == nil || score < best!.1 { best = (index, score) }
+func under(_ point: CGPoint, _ app: AXUIElement) -> (AXUIElement, String)? {
+    var found: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &found) == .success, var node = found
+    else { return nil }
+    if let home = element(node, kAXWindowAttribute), number(home) != pane_id { return nil }
+    for _ in 0..<Limit.label {
+        let role = kind(node)
+        if pressable.contains(role) || inputs.contains(role) || rows.contains(role) {
+            var name = tidy(string(node, kAXTitleAttribute), Limit.name)
+            if name.isEmpty { name = tidy(string(node, kAXDescriptionAttribute), Limit.name) }
+            if name.isEmpty {
+                var parts: [String] = []
+                gather(node, 0, &parts)
+                name = tidy(parts.joined(separator: " · "), Limit.name)
+            }
+            return (node, "\(words[role] ?? "control")\(name.isEmpty ? "" : " \"\(name)\"")")
+        }
+        guard let parent = element(node, kAXParentAttribute) else { break }
+        node = parent
     }
-    return best?.0
+    return nil
 }
 
 func strike(_ point: CGPoint, _ pid: pid_t, _ mode: String) {
@@ -659,18 +669,21 @@ func strike(_ point: CGPoint, _ pid: pid_t, _ mode: String) {
 func click(_ request: [String: Any]) throws -> String {
     let mode = request["mode"] as? String ?? ""
     let pid = try front().0.processIdentifier
-    var request = request
+    let element: AXUIElement
+    let label: String
+    var box: CGRect?
     if let x = (request["x"] as? NSNumber)?.doubleValue, let y = (request["y"] as? NSNumber)?.doubleValue {
         let point = CGPoint(x: pane.minX + pane.width * x, y: pane.minY + pane.height * y)
         guard pane.contains(point) else { throw Failure(text: "that spot is outside the window") }
-        if let hit = nearest(point) {
-            request["number"] = hit + 1
-        } else {
+        guard let hit = under(point, AXUIElementCreateApplication(pid)) else {
             strike(point, pid, mode == "real" ? "real" : "quiet")
-            return "clicked that spot; it is not a control in the list"
+            return "clicked that spot"
         }
+        (element, label) = hit
+        box = CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2)
+    } else {
+        (element, label, box) = try target(request)
     }
-    let (element, label, box) = try target(request)
     let role = kind(element)
     if !mode.isEmpty {
         guard let box, box.width > 0, box.height > 0 else { throw Failure(text: "it could not be clicked") }
