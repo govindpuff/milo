@@ -549,10 +549,15 @@ describes.
 #### App windows
 
 milo remembers the window by its ID, so the operator stays in it even if you
-use another window of the same app. If an action reports success but the
-window looks the same afterward, milo brings the app to the front and looks
-again, because some apps stop drawing while they are covered. milo puts the
-app that was in front back when the plan ends.
+use another window of the same app. `open` brings the app to the front,
+because many apps turn off their menus and stop drawing while they are
+covered. milo puts the app that was in front back when the plan ends, unless
+the operator called `show`.
+
+Before each request, milo estimates the size of the prompt. If the estimate is
+over 6,500 tokens, milo sends the list without the picture, because the model
+server limits a request that has a picture to 8,192 tokens. Results of earlier
+actions are cut to 300 characters, except the text that `read` returned.
 
 The loop works as follows:
 

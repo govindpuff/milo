@@ -91,8 +91,7 @@ commands without asking, and can't use apps for you.
 
 milo can click, type, press keys, and choose menu items in the apps on your
 Mac. For example, you can ask it to write a note, send a message, or search a
-website. milo works in the app's window in the background, so you can keep
-using your Mac while it works.
+website.
 
 1.  In System Settings, go to **Privacy & Security**, and turn on access for
     your terminal app under both **Accessibility** and **Screen Recording**.
@@ -132,9 +131,8 @@ window off the screen instead. This is slower and less exact.
 ### Apps
 
 In an app, milo looks at a picture of the window, and reads the names of its
-buttons, fields, and text. It works in the window in the background, and
-doesn't move your pointer. If an app doesn't respond in the background, milo
-brings the app to the front, and puts your app back when the plan finishes.
+buttons, fields, and text. milo brings the app to the front while it works
+there, and puts your app back when the plan finishes.
 
 milo starts each plan in the place where it worked last, or goes to the app or
 the tab that the plan names. It never works in the terminal window that milo
