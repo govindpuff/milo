@@ -283,8 +283,18 @@ URL and the model name that it expects:
 milo --llm-url http://127.0.0.1:1234/v1 --model MODEL_NAME
 ```
 
-The server must stream chat completions and must not require an API key. If it
-doesn't support tool calls, add `--no-tools`.
+The server must stream chat completions. If it doesn't support tool calls, add
+`--no-tools`.
+
+To use a hosted model that requires an API key, set the key in the
+`MILO_LLM_KEY` or `OPENAI_API_KEY` environment variable:
+
+```sh
+OPENAI_API_KEY=YOUR_KEY milo --llm-url https://api.openai.com/v1 --model gpt-6.1-terra
+```
+
+With a key, milo sends what you say, the lists of what is on screen, and
+screenshots to that server.
 
 ## Options
 
