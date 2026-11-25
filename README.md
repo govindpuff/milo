@@ -194,7 +194,8 @@ there, and puts your app back when the plan finishes.
 
 milo starts each plan in the place where it worked last, or goes to the app or
 the tab that the plan names. It never works in the terminal window that milo
-runs in unless you ask for that app by name.
+runs in. milo can work in the other windows of your terminal app, so open a
+new window when you want it to run a command.
 
 If something asks milo to allow, confirm, sign in, pay, delete, or send
 something that the plan doesn't cover, milo stops and tells you what it asks.

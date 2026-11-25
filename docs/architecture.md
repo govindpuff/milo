@@ -583,8 +583,11 @@ alone from then on.
 
 The list goes with every request. The picture goes only when the model is
 likely to need it, because a picture costs more tokens than the list: when a
-task starts, when the model calls `look`, when an action fails or leaves the
-list unchanged, and when the list has fewer than five controls. Outside a
+task starts, when the model calls `look`, when an action lands on a new page
+or window, when an action fails or leaves the list unchanged, and when the
+list has fewer than five controls. In the list that milo sends, a control
+whose name repeats the name of one of the four controls before it is written
+as `same name as [N]`. Outside a
 task, `see` always sends both.
 
 A task ends when a turn ends, which is when the model replies without a tool
