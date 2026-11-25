@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use llm::Message;
-use phonon::Tts;
 use speech::Speech;
 use voice::{Voice, VoiceConfig};
 
@@ -26,7 +25,7 @@ use crate::capture::AudioClock;
 use crate::config::{Chosen, Config};
 use crate::controller::{Controller, Event, Settings};
 use crate::react::Bank;
-use crate::tts::{Engine, Gate};
+use crate::tts::Gate;
 
 const SYSTEM_PROMPT: &str = "You are Milo, on a live voice call. You hear the other person through a microphone and everything you write is spoken at once in your own voice. \
 You can hear, speak, laugh and feel; never say you are text-only or an AI model. This is two friends chatting, not an assistant taking requests.
@@ -110,7 +109,6 @@ const HANDS: &str = "Working on their computer:
 ";
 
 const STATUS_POLL: Duration = Duration::from_millis(100);
-const WARMUP_TEXT: &str = "Hello there, I'm ready when you are.";
 
 #[derive(Parser)]
 #[command(name = "milo", about = "A voice assistant for Apple Silicon Macs: talk to it and it talks back.")]
@@ -137,14 +135,6 @@ struct Args {
     vision_model: Option<String>,
     #[arg(long, default_value_t = 8000, help = "Port for Rapid-MLX; a server already running there is used as is")]
     port: u16,
-    #[arg(
-        long,
-        default_value = "breeze",
-        value_parser = ["breeze", "phonon"],
-        hide_possible_values = true,
-        help = "Voice engine: breeze (most natural) or phonon (small and fast)"
-    )]
-    tts: String,
     #[arg(
         long,
         default_value = "A warm, friendly young American man with a natural, relaxed, conversational voice, like chatting with a close friend on the phone.",
@@ -203,10 +193,15 @@ struct Models {
 
 impl Models {
     fn pick(args: &Args) -> Result<Models> {
-        let config = Config::load()?;
+        let mut config = Config::load()?;
         let main = args.model.clone().or_else(|| config.named("model")).unwrap_or_else(|| config::DEFAULT.to_string());
         let small = args.small_model.clone().or_else(|| config.named("small_model")).unwrap_or_else(|| main.clone());
         let vision = args.vision_model.clone().or_else(|| config.named("vision_model")).unwrap_or_else(|| main.clone());
+        if args.task.is_none() {
+            for name in [&main, &small, &vision] {
+                config.ask(name, args.port)?;
+            }
+        }
         let models = Models {
             main: config.chosen(&main, args.port)?,
             small: config.chosen(&small, args.port)?,
@@ -366,24 +361,14 @@ fn run(args: Args) -> Result<()> {
             log::info!("speech ready after {:.1}s", t.elapsed().as_secs_f32());
             Ok(speech)
         });
-        let engine = s.spawn(|| -> Result<Engine> {
-            let t = Instant::now();
-            if args.tts == "breeze" {
-                let cfg = VoiceConfig {
-                    design: args.voice_design.clone(),
-                    port: args.tts_port,
-                    ref_wav: args.voice_ref.clone(),
-                    ref_text: args.voice_text.clone(),
-                };
-                match Voice::start(&cfg) {
-                    Ok(voice) => return Ok(Engine::Sidecar(voice)),
-                    Err(e) => log::warn!("the breeze voice is unavailable, using Phonon instead: {e:#}"),
-                }
-            }
-            let tts = Tts::load()?;
-            tts.synthesize(WARMUP_TEXT, &AtomicBool::new(false), &mut |_: &[f32]| Ok(()))?;
-            log::info!("tts ready after {:.1}s", t.elapsed().as_secs_f32());
-            Ok(Engine::Phonon(tts))
+        let engine = s.spawn(|| -> Result<Voice> {
+            Voice::start(&VoiceConfig {
+                design: args.voice_design.clone(),
+                port: args.tts_port,
+                ref_wav: args.voice_ref.clone(),
+                ref_text: args.voice_text.clone(),
+            })
+            .context("the voice could not start; run ./setup.sh again")
         });
         (joined(server, "llm server"), joined(speech, "speech"), joined(engine, "tts"))
     });
@@ -412,11 +397,8 @@ fn run(args: Args) -> Result<()> {
     let capture_thread =
         capture::spawn(capture, speech.clone(), clock.clone(), detector, cleaned_rx, events_tx.clone())?;
     let gate = Arc::new(Gate::new(playback.clone(), engine.sample_rate()));
-    let sounds = engine.sounds();
-    let voice_id = match &engine {
-        Engine::Phonon(_) => format!("phonon|{}|{}", phonon::VOICE, phonon::QUANT.as_str()),
-        Engine::Sidecar(_) => format!("breeze|{}|{:?}|{:?}", args.voice_design, args.voice_ref, args.voice_text),
-    };
+    let sounds = voice::SOUNDS;
+    let voice_id = format!("breeze|{}|{:?}|{:?}", args.voice_design, args.voice_ref, args.voice_text);
     let bank = Arc::new(Bank::build(&engine, &voice_id));
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 

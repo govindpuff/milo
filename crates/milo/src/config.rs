@@ -85,6 +85,7 @@ const RATES: &[Rate] = &[
     rate("gpt-6.1-sol-healthcare", 2.0, 0.1, 10.0, 2.0),
 ];
 
+const REFUSED: [&str; 2] = ["answered 401", "answered 403"];
 const ULTRAFAST: f64 = 6.0;
 const PROMOTED: f64 = 3.0;
 const PROMOTION_ENDS: (i16, i8, i8) = (2027, 3, 1);
@@ -199,6 +200,39 @@ impl Config {
         Ok(key.map(|key| key.trim().to_string()).filter(|key| !key.is_empty()))
     }
 
+    pub fn ask(&mut self, name: &str, port: u16) -> Result<()> {
+        let (id, _) = self.split(name.trim());
+        let id = id.to_string();
+        let env = KNOWN.iter().find(|known| known.id == id).map_or("", |known| known.env);
+        if env.is_empty() || self.key(&id)?.is_some() || !std::io::stdin().is_terminal() {
+            return Ok(());
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        loop {
+            let key = typed(&format!("Paste your API key for {id}: "))?;
+            if key.is_empty() {
+                bail!("there is no API key for {id}: run `milo auth {id}`, or set {env}");
+            }
+            self.keys.insert(id.clone(), key.into());
+            let listed = rt.block_on(self.chosen(&format!("{id}/any"), port)?.llm.models());
+            match listed {
+                Err(e) if REFUSED.iter().any(|code| format!("{e:#}").contains(code)) => {
+                    self.keys.remove(&id);
+                    eprintln!("{id} refused that key. Try again, or press Return to quit.");
+                }
+                Err(e) => {
+                    self.keys.remove(&id);
+                    return Err(e.context(format!("could not check the key for {id}")));
+                }
+                Ok(_) => {
+                    let path = save(&self.keys)?;
+                    eprintln!("saved the key for {id} in {}", path.display());
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     pub fn keyed(&self, id: &str) -> bool {
         self.key(id).is_ok_and(|key| key.is_some())
     }
@@ -280,20 +314,10 @@ fn typed(ask: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
-pub fn auth(id: &str) -> Result<()> {
-    let config = Config::load()?;
-    if !config.has(id) {
-        bail!("there is no provider called {id}; the providers are: {}", config.providers().join(", "));
-    }
-    let key = typed(&format!("API key for {id} (leave empty to remove it): "))?;
+fn save(keys: &Map<String, Value>) -> Result<PathBuf> {
     let dir = folder()?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("auth.json");
-    let mut keys = config.keys;
-    match key.is_empty() {
-        true => keys.remove(id),
-        false => keys.insert(id.to_string(), key.clone().into()),
-    };
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -301,7 +325,22 @@ pub fn auth(id: &str) -> Result<()> {
         .mode(0o600)
         .open(&path)
         .with_context(|| format!("write {}", path.display()))?;
-    writeln!(file, "{}", serde_json::to_string_pretty(&Value::Object(keys))?)?;
+    writeln!(file, "{}", serde_json::to_string_pretty(&Value::Object(keys.clone()))?)?;
+    Ok(path)
+}
+
+pub fn auth(id: &str) -> Result<()> {
+    let config = Config::load()?;
+    if !config.has(id) {
+        bail!("there is no provider called {id}; the providers are: {}", config.providers().join(", "));
+    }
+    let key = typed(&format!("API key for {id} (leave empty to remove it): "))?;
+    let mut keys = config.keys;
+    match key.is_empty() {
+        true => keys.remove(id),
+        false => keys.insert(id.to_string(), key.clone().into()),
+    };
+    let path = save(&keys)?;
     match key.is_empty() {
         true => println!("removed the key for {id} from {}", path.display()),
         false => println!("saved the key for {id} in {}", path.display()),

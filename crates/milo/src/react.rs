@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use crate::tts::Engine;
+use voice::Voice;
 
 const VARIANTS: usize = 2;
 const EDGE: f32 = 0.012;
@@ -67,7 +67,7 @@ pub struct Bank {
 }
 
 impl Bank {
-    pub fn build(engine: &Engine, voice_id: &str) -> Bank {
+    pub fn build(engine: &Voice, voice_id: &str) -> Bank {
         let rate = engine.sample_rate() as usize;
         let dir = cache_dir();
         let mut clips = Vec::with_capacity(SPECS.len());
@@ -103,8 +103,10 @@ impl Bank {
                 }
                 variants.push(pcm);
             }
-            if let Some(first) = variants.first() {
-                engine.lead(clips.len(), s.say, first);
+            if let Some(first) = variants.first()
+                && let Err(e) = engine.lead(clips.len(), s.say, first)
+            {
+                log::debug!("{e:#}");
             }
             clips.push(variants);
         }

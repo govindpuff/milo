@@ -7,70 +7,12 @@ use std::time::Instant;
 
 use anyhow::Result;
 use audio::Playback;
-use phonon::Tts;
 use tokio::sync::mpsc::UnboundedSender;
+use voice::Voice;
 
 use crate::controller::Event;
 
 const TAIL_MS: u32 = 10;
-
-pub enum Engine {
-    Phonon(Tts),
-    Sidecar(voice::Voice),
-}
-
-impl Engine {
-    pub fn sounds(&self) -> &'static [&'static str] {
-        match self {
-            Engine::Phonon(_) => &[],
-            Engine::Sidecar(_) => voice::SOUNDS,
-        }
-    }
-
-    pub fn sample_rate(&self) -> u32 {
-        match self {
-            Engine::Phonon(tts) => tts.sample_rate(),
-            Engine::Sidecar(sidecar) => sidecar.sample_rate(),
-        }
-    }
-
-    pub fn synthesize(
-        &self,
-        text: &str,
-        instruct: Option<&str>,
-        session: Option<u64>,
-        lead: Option<usize>,
-        stop: &AtomicBool,
-        on_pcm: &mut (dyn FnMut(&[f32]) -> Result<()> + Send),
-    ) -> Result<()> {
-        match self {
-            Engine::Phonon(tts) => tts.synthesize(&strip_tags(text), stop, on_pcm),
-            Engine::Sidecar(sidecar) => sidecar.synthesize(text, instruct, session, lead, stop, on_pcm),
-        }
-    }
-
-    pub fn lead(&self, id: usize, text: &str, pcm: &[f32]) {
-        if let Engine::Sidecar(sidecar) = self
-            && let Err(e) = sidecar.lead(id, text, pcm)
-        {
-            log::debug!("{e:#}");
-        }
-    }
-}
-
-fn strip_tags(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut depth = 0u32;
-    for c in text.chars() {
-        match c {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            c if depth == 0 => out.push(c),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 pub enum Job {
     Say { turn: u64, text: String, instruct: Option<String>, lead: Option<usize>, stop: Arc<AtomicBool> },
@@ -198,7 +140,7 @@ impl Gate {
 }
 
 pub fn spawn(
-    engine: Engine,
+    engine: Voice,
     gate: Arc<Gate>,
     events: UnboundedSender<Event>,
 ) -> std::io::Result<(Sender<Job>, JoinHandle<()>)> {
