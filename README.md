@@ -1,5 +1,11 @@
 # milo
 
+> **Note:** milo is experimental software, and it isn't ready for production
+> use. It can click, type, and send messages on your Mac, and it can make
+> mistakes. milo is provided as is, without warranty, and its authors aren't
+> responsible for any loss or damage that comes from using it. For details,
+> see the [license](LICENSE).
+
 milo is a voice assistant for your Mac. You talk, and it talks back, like a
 phone call. You can talk over it to interrupt. It can also check the weather,
 set timers, open apps, use apps and websites for you, send text messages, and
