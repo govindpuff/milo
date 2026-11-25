@@ -1,3 +1,4 @@
+mod app;
 mod capture;
 mod computer;
 mod config;
@@ -8,9 +9,6 @@ mod skills;
 mod tools;
 mod tts;
 
-use std::fs::File;
-use std::io::IsTerminal;
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -138,12 +136,8 @@ struct Args {
     vision_model: Option<String>,
     #[arg(long, default_value_t = 8000, help = "Port for Rapid-MLX; a server already running there is used as is")]
     port: u16,
-    #[arg(
-        long,
-        default_value = "A warm, friendly young American man with a natural, relaxed, conversational voice, like chatting with a close friend on the phone.",
-        help = "Breeze: description of the voice to create when no --voice-ref is given"
-    )]
-    voice_design: String,
+    #[arg(long, value_name = "TEXT", help = "Breeze: description of the voice to create when no --voice-ref is given")]
+    voice_design: Option<String>,
     #[arg(long, help = "Don't react (mm-hmm, oh no, a laugh) while the user is talking or pausing mid-thought")]
     no_backchannel: bool,
     #[arg(long, value_name = "WAV", help = "Breeze: a 3 to 12 second clip of the voice to use")]
@@ -203,6 +197,10 @@ impl Models {
         if args.task.is_none() {
             for name in [&main, &small, &vision] {
                 config.ask(name, args.port)?;
+            }
+            if notch::on() {
+                app::setup(&[&main, &small, &vision])?;
+                config = Config::load()?;
             }
         }
         let models = Models {
@@ -276,30 +274,26 @@ fn joined<T>(handle: ScopedJoinHandle<'_, Result<T>>, what: &str) -> Result<T> {
     handle.join().map_err(|_| anyhow!("{what} panicked"))?.with_context(|| format!("{what} failed"))
 }
 
-fn bundled() -> bool {
-    std::env::current_exe().is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"))
-        && !std::io::stderr().is_terminal()
-}
-
-fn settle() -> Result<()> {
-    let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
-    let logs = home.join("Library/Logs/Milo");
-    std::fs::create_dir_all(&logs).with_context(|| format!("create {}", logs.display()))?;
-    let log = File::create(logs.join("milo.log")).context("create the log file")?;
-    unsafe {
-        libc::dup2(log.as_raw_fd(), libc::STDOUT_FILENO);
-        libc::dup2(log.as_raw_fd(), libc::STDERR_FILENO);
+fn settled(mut args: Args) -> Result<Args> {
+    let config = Config::load()?;
+    if args.voice_design.is_none() && args.voice_ref.is_none() {
+        args.voice_ref = config.named("voice_ref").map(PathBuf::from);
+        args.voice_text = config.named("voice_text");
     }
-    let path = std::env::var("PATH").unwrap_or_default();
-    let local = home.join(".local/bin");
-    unsafe { std::env::set_var("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{}:{path}", local.display())) };
-    Ok(())
+    args.voice_design = args.voice_design.or_else(|| config.named("voice_design"));
+    args.input_device = args.input_device.or_else(|| config.named("input_device"));
+    args.output_device = args.output_device.or_else(|| config.named("output_device"));
+    args.no_aec |= config.flag("headphones");
+    args.push_to_talk |= config.flag("push_to_talk");
+    args.dangerously_auto_approve |= config.flag("auto_approve");
+    args.no_backchannel |= !config.flag("listening_sounds");
+    Ok(args)
 }
 
 fn main() -> Result<()> {
-    let app = bundled();
+    let app = app::bundled();
     if app {
-        settle()?;
+        app::settle()?;
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
@@ -317,18 +311,20 @@ fn main() -> Result<()> {
     if let Some(task) = args.task.clone() {
         return solo(args, &task);
     }
-    if args.dangerously_auto_approve {
-        tools::unasked();
-    }
     if args.no_notch {
         return run(args);
     }
+    app::serve(args.port);
     notch::run(move || {
         let code = match run(args) {
-            Ok(()) => 0,
+            Ok(()) => {
+                app::finish();
+                0
+            }
             Err(e) => {
                 eprintln!("Error: {e:?}");
                 if app {
+                    app::stopped();
                     notch::fail(&format!("{e:#}"));
                 }
                 1
@@ -359,6 +355,8 @@ fn solo(args: Args, task: &str) -> Result<()> {
 }
 
 fn run(args: Args) -> Result<()> {
+    let args = settled(args)?;
+    tools::unasked(args.dangerously_auto_approve);
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let models = Models::pick(&args)?;
 
@@ -393,12 +391,12 @@ fn run(args: Args) -> Result<()> {
         });
         let engine = s.spawn(|| -> Result<Voice> {
             Voice::start(&VoiceConfig {
-                design: args.voice_design.clone(),
+                design: args.voice_design.clone().unwrap_or_else(|| config::VOICE.to_string()),
                 port: args.tts_port,
                 ref_wav: args.voice_ref.clone(),
                 ref_text: args.voice_text.clone(),
             })
-            .context("the voice could not start; run ./setup.sh again")
+            .context("the voice could not start")
         });
         (joined(server, "llm server"), joined(speech, "speech"), joined(engine, "tts"))
     });
@@ -428,7 +426,12 @@ fn run(args: Args) -> Result<()> {
         capture::spawn(capture, speech.clone(), clock.clone(), detector, cleaned_rx, events_tx.clone())?;
     let gate = Arc::new(Gate::new(playback.clone(), engine.sample_rate()));
     let sounds = voice::SOUNDS;
-    let voice_id = format!("breeze|{}|{:?}|{:?}", args.voice_design, args.voice_ref, args.voice_text);
+    let voice_id = format!(
+        "breeze|{}|{:?}|{:?}",
+        args.voice_design.as_deref().unwrap_or(config::VOICE),
+        args.voice_ref,
+        args.voice_text
+    );
     let bank = Arc::new(Bank::build(&engine, &voice_id));
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 
@@ -467,6 +470,7 @@ fn run(args: Args) -> Result<()> {
         }
     }
     println!("listening");
+    let quit = events_tx.clone();
     let controller = Controller::new(
         llm,
         speech.clone(),
@@ -490,7 +494,7 @@ fn run(args: Args) -> Result<()> {
         history,
         voice_reset,
     );
-    let result = rt.block_on(controller.run(events_rx));
+    let result = if app::listening(quit) { rt.block_on(controller.run(events_rx)) } else { Ok(()) };
 
     drop(audio_guard);
     let _ = capture_thread.join();

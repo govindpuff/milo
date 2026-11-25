@@ -119,6 +119,13 @@ pub fn list_devices() -> Result<Vec<String>> {
     Ok(out)
 }
 
+pub fn names() -> Result<(Vec<String>, Vec<String>)> {
+    let host = cpal::default_host();
+    let inputs = host.input_devices()?.map(|d| device_name(&d)).collect();
+    let outputs = host.output_devices()?.map(|d| device_name(&d)).collect();
+    Ok((inputs, outputs))
+}
+
 pub fn open(cfg: &AudioConfig) -> Result<(Capture, Playback, AudioGuard)> {
     ensure!(cfg.tts_rate > 0, "tts_rate must be positive");
     let host = cpal::default_host();

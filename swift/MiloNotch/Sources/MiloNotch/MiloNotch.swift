@@ -72,6 +72,16 @@ struct Message: Decodable {
     let on: Bool?
     let id: UInt64?
     let card: Card?
+    let provider: String?
+    let detail: String?
+    let settings: Prefs?
+    let providers: [Provider]?
+    let inputs: [String]?
+    let outputs: [String]?
+    let models: [String]?
+    let voice: String?
+    let version: String?
+    let url: String?
 }
 
 struct Answer: Encodable {
@@ -328,33 +338,61 @@ enum Mark {
 final class Menu: NSObject, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let mute = NSMenuItem(title: "Mute Microphone", action: #selector(toggle), keyEquivalent: "")
+    let update = NSMenuItem(title: "", action: #selector(fetch), keyEquivalent: "")
+    var link: URL?
     var muted: () -> Bool = { false }
     var flip: () -> Void = {}
+    var settings: () -> Void = {}
+    var leave: () -> Void = {}
 
     override init() {
         super.init()
         item.button?.image = Mark.image
         let menu = NSMenu()
         menu.delegate = self
-        mute.target = self
-        menu.addItem(mute)
-        menu.addItem(.separator())
+        update.isHidden = true
+        let all = [
+            update,
+            mute,
+            .separator(),
+            NSMenuItem(title: "Settings…", action: #selector(open), keyEquivalent: ","),
+            .separator(),
+            NSMenuItem(title: "Quit Milo", action: #selector(quit), keyEquivalent: "q"),
+        ]
+        for entry in all {
+            entry.target = self
+            menu.addItem(entry)
+        }
+        item.menu = menu
         let quit = NSMenuItem(title: "Quit Milo", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
-        menu.addItem(quit)
-        item.menu = menu
+        NSApplication.shared.mainMenu = commands(quit: quit)
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         mute.state = muted() ? .on : .off
     }
 
+    func offer(_ version: String, _ address: String) {
+        link = URL(string: address)
+        update.title = "Update to Milo \(version)…"
+        update.isHidden = link == nil
+    }
+
     @objc func toggle() {
         flip()
     }
 
+    @objc func open() {
+        settings()
+    }
+
+    @objc func fetch() {
+        if let link { NSWorkspace.shared.open(link) }
+    }
+
     @objc func quit() {
-        kill(getpid(), SIGINT)
+        leave()
     }
 }
 
@@ -362,6 +400,8 @@ final class Menu: NSObject, NSMenuDelegate {
 final class Controller {
     let model = Model()
     let menu = Menu()
+    let desk = Desk()
+    let windows = Windows()
     let wave = Wave()
     let panel: NSPanel
     var screen = NSRect.zero
@@ -389,6 +429,10 @@ final class Controller {
         model.toggle = { [weak self] in self?.toggle() }
         menu.muted = { [weak self] in self?.model.muted ?? false }
         menu.flip = { [weak self] in self?.toggle() }
+        menu.settings = { [weak self] in self?.settings() }
+        menu.leave = { [weak self] in self?.send(Ask(type: "quit")) }
+        desk.ask = { [weak self] in self?.send($0) }
+        desk.save = { [weak self] in self?.send(Save(settings: $0)) }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -508,16 +552,47 @@ final class Controller {
         }
     }
 
+    func settings() {
+        windows.show("Milo Settings", SettingsView(desk: desk))
+    }
+
     func send(_ value: some Encodable) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        guard let data = try? encoder.encode(value) else { return }
         String(decoding: data, as: UTF8.self).withCString { reply?($0) }
     }
 
     func receive(_ data: Data) {
-        guard let message = try? JSONDecoder().decode(Message.self, from: data) else { return }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let message = try? decoder.decode(Message.self, from: data) else { return }
         switch message.type {
         case "status":
-            if let state = message.state { model.state = state }
+            if let state = message.state {
+                model.state = state
+                desk.state = state
+            }
+        case "settings":
+            guard let settings = message.settings else { return }
+            if desk.draft == desk.saved { desk.draft = settings }
+            desk.saved = settings
+            desk.providers = message.providers ?? []
+            desk.inputs = message.inputs ?? []
+            desk.outputs = message.outputs ?? []
+            desk.voice = message.voice ?? ""
+        case "key":
+            guard let provider = message.provider else { return }
+            desk.keys[provider] = message.state
+            desk.detail = message.detail ?? ""
+            if message.state == "saved", desk.wanted == provider { desk.wanted = nil }
+        case "models":
+            if let provider = message.provider { desk.models[provider] = message.models ?? [] }
+        case "setup":
+            desk.wanted = message.provider
+            windows.show("Milo", SetupView(desk: desk) { [weak self] in self?.windows.close("Milo") })
+        case "update":
+            if let version = message.version, let url = message.url { menu.offer(version, url) }
         case "card":
             guard let card = message.card else { return }
             if let at = model.cards.firstIndex(where: { $0.id == card.id }) {
@@ -559,10 +634,14 @@ public func fail(message: UnsafePointer<CChar>) {
             alert.alertStyle = .critical
             alert.messageText = "Milo stopped"
             alert.informativeText = text
+            alert.addButton(withTitle: "Settings…")
             alert.addButton(withTitle: "Quit")
             NSApplication.shared.activate(ignoringOtherApps: true)
-            alert.runModal()
-            exit(1)
+            if alert.runModal() == .alertFirstButtonReturn {
+                controller?.settings()
+            } else {
+                exit(1)
+            }
         }
     }
 }

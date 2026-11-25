@@ -22,6 +22,7 @@ static ON: AtomicBool = AtomicBool::new(false);
 static MUTED: AtomicBool = AtomicBool::new(false);
 static SHOWN: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static ASKED: Mutex<Option<std::sync::mpsc::Sender<Value>>> = Mutex::new(None);
 static WAITING: LazyLock<Mutex<HashMap<u64, oneshot::Sender<String>>>> = LazyLock::new(Mutex::default);
 
 pub struct Action {
@@ -46,13 +47,25 @@ extern "C" fn reply(message: *const c_char) {
         MUTED.store(value["on"].as_bool().unwrap_or(false), Relaxed);
         return;
     }
+    if value["type"].is_string() {
+        if let Some(asked) = ASKED.lock().unwrap().as_ref() {
+            let _ = asked.send(value);
+        }
+        return;
+    }
     let (Some(id), Some(action)) = (value["id"].as_u64(), value["action"].as_str()) else { return };
     if let Some(tx) = WAITING.lock().unwrap().remove(&id) {
         let _ = tx.send(action.to_string());
     }
 }
 
-fn post(value: Value) {
+pub fn requests() -> std::sync::mpsc::Receiver<Value> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    *ASKED.lock().unwrap() = Some(tx);
+    rx
+}
+
+pub fn post(value: Value) {
     if !on() {
         return;
     }

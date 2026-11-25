@@ -44,7 +44,16 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
     println!("cargo:rustc-link-search=native=/usr/lib/swift");
     println!("cargo:rustc-link-lib=static:+whole-archive=MiloNotch");
-    for fw in ["AppKit", "SwiftUI", "Carbon", "Foundation"] {
+    for fw in [
+        "AppKit",
+        "SwiftUI",
+        "Carbon",
+        "Foundation",
+        "AVFoundation",
+        "ApplicationServices",
+        "ServiceManagement",
+        "UniformTypeIdentifiers",
+    ] {
         println!("cargo:rustc-link-lib=framework={fw}");
     }
 }

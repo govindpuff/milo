@@ -8,6 +8,21 @@ use serde_json::{Map, Value, json};
 
 pub const LOCAL: &str = "local";
 pub const DEFAULT: &str = "openai/gpt-6.2-sol";
+pub const VOICE: &str = "A warm, friendly young American man with a natural, relaxed, conversational voice, like chatting with a close friend on the phone.";
+const SOUNDS: &str = "listening_sounds";
+const SETTINGS: &[&str] = &[
+    "model",
+    "voice_design",
+    "voice_ref",
+    "voice_text",
+    "auto_approve",
+    "push_to_talk",
+    "headphones",
+    SOUNDS,
+    "input_device",
+    "output_device",
+];
+const LIVE: &[&str] = &["auto_approve", "push_to_talk"];
 
 struct Known {
     id: &'static str,
@@ -178,6 +193,34 @@ impl Config {
         self.raw[key].as_str().map(str::trim).filter(|name| !name.is_empty()).map(str::to_string)
     }
 
+    pub fn flag(&self, key: &str) -> bool {
+        self.raw[key].as_bool().unwrap_or(key == SOUNDS)
+    }
+
+    pub fn settings(&self) -> Value {
+        let mut all = Map::new();
+        for key in SETTINGS {
+            let value = match *key {
+                "model" => self.named(key).unwrap_or_else(|| DEFAULT.to_string()).into(),
+                "auto_approve" | "push_to_talk" | "headphones" | SOUNDS => self.flag(key).into(),
+                _ => self.named(key).unwrap_or_default().into(),
+            };
+            all.insert(key.to_string(), value);
+        }
+        Value::Object(all)
+    }
+
+    pub fn hosted(&self) -> Vec<Value> {
+        let hosted = KNOWN.iter().filter(|known| !known.env.is_empty());
+        hosted.map(|known| json!({ "id": known.id, "keyed": self.keyed(known.id) })).collect()
+    }
+
+    pub fn wants(&self, name: &str) -> Option<String> {
+        let (id, _) = self.split(name.trim());
+        let known = KNOWN.iter().find(|known| known.id == id)?;
+        (!known.env.is_empty() && !self.keyed(id)).then(|| id.to_string())
+    }
+
     fn provider(&self, id: &str) -> &Value {
         &self.raw["providers"][id]
     }
@@ -213,36 +256,21 @@ impl Config {
     }
 
     pub fn ask(&mut self, name: &str, port: u16) -> Result<()> {
-        let (id, _) = self.split(name.trim());
-        let id = id.to_string();
-        let Some(known) = KNOWN.iter().find(|known| known.id == id) else { return Ok(()) };
-        let env = known.env;
-        if env.is_empty() || self.key(&id)?.is_some() || !std::io::stdin().is_terminal() {
+        let Some(id) = self.wants(name) else { return Ok(()) };
+        if !std::io::stdin().is_terminal() {
             return Ok(());
         }
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         loop {
             let key = typed(&format!("Paste your API key for {id}: "))?;
             if key.is_empty() {
-                bail!("there is no API key for {id}: run `milo auth {id}`, or set {env}");
+                bail!("there is no API key for {id}: run `milo auth {id}`");
             }
-            self.keys.insert(id.clone(), key.into());
-            let listed = rt.block_on(self.chosen(&format!("{id}/any"), port)?.llm.check(known.check));
-            match listed {
-                Err(e) if known.refuses.iter().any(|code| format!("{e:#}").contains(code)) => {
-                    self.keys.remove(&id);
-                    eprintln!("{id} refused that key. Try again, or press Return to quit.");
-                }
-                Err(e) => {
-                    self.keys.remove(&id);
-                    return Err(e.context(format!("could not check the key for {id}")));
-                }
-                Ok(_) => {
-                    let path = save(&self.keys)?;
-                    eprintln!("saved the key for {id} in {}", path.display());
-                    return Ok(());
-                }
+            if enter(&id, &key, port)? {
+                self.keys = Config::load()?.keys;
+                eprintln!("saved the key for {id}");
+                return Ok(());
             }
+            eprintln!("{id} refused that key. Try again, or press Return to quit.");
         }
     }
 
@@ -305,6 +333,46 @@ impl Config {
             pictures: own["pictures"].as_bool().unwrap_or(true),
         })
     }
+}
+
+pub fn enter(id: &str, key: &str, port: u16) -> Result<bool> {
+    let mut config = Config::load()?;
+    let known = KNOWN.iter().find(|known| known.id == id).ok_or_else(|| anyhow!("there is no provider called {id}"))?;
+    config.keys.insert(id.to_string(), key.trim().into());
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    match rt.block_on(config.chosen(&format!("{id}/any"), port)?.llm.check(known.check)) {
+        Err(e) if known.refuses.iter().any(|code| format!("{e:#}").contains(code)) => Ok(false),
+        Err(e) => Err(e.context(format!("could not check the key for {id}"))),
+        Ok(()) => save(&config.keys).map(|_| true),
+    }
+}
+
+pub fn update(new: &Map<String, Value>) -> Result<bool> {
+    let dir = folder()?;
+    let path = dir.join("config.json");
+    let mut raw = object(&path)?;
+    let was = raw.clone();
+    for key in SETTINGS {
+        let plain = match new.get(*key) {
+            Some(Value::String(text)) => text.trim().is_empty(),
+            Some(Value::Bool(on)) => *on == (*key == SOUNDS),
+            _ => continue,
+        };
+        match plain {
+            true => raw.as_object_mut().and_then(|raw| raw.remove(*key)),
+            false => raw.as_object_mut().and_then(|raw| raw.insert(key.to_string(), new[*key].clone())),
+        };
+    }
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&raw)?))
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(SETTINGS.iter().any(|key| !LIVE.contains(key) && was[*key] != raw[*key]))
+}
+
+pub fn offered(id: &str, port: u16) -> Result<Vec<String>> {
+    let chosen = Config::load()?.chosen(&format!("{id}/any"), port)?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    rt.block_on(chosen.llm.models())
 }
 
 fn typed(ask: &str) -> Result<String> {
@@ -383,9 +451,7 @@ pub fn models(id: Option<&str>, port: u16) -> Result<()> {
     if !config.has(id) {
         bail!("there is no provider called {id}; the providers are: {}", config.providers().join(", "));
     }
-    let chosen = config.chosen(&format!("{id}/any"), port)?;
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    for model in rt.block_on(chosen.llm.models())? {
+    for model in offered(id, port)? {
         println!("{id}/{model}");
     }
     Ok(())

@@ -106,6 +106,7 @@ pub enum Event {
     Did { turn: u64, id: String, text: String },
     Acted { turn: u64 },
     Halt,
+    Quit,
     Aside(String),
     Trimmed { cut: usize, system: String },
     Fatal(String),
@@ -275,6 +276,7 @@ impl Controller {
                 r = &mut ctrl_c => break r.map_err(Into::into),
                 ev = rx.recv() => match ev {
                     Some(Event::Fatal(e)) => break Err(anyhow!(e)),
+                    Some(Event::Quit) => break Ok(()),
                     Some(ev) => self.handle(ev),
                     None => break Ok(()),
                 },
@@ -702,7 +704,7 @@ impl Controller {
                     self.history[0].content = system;
                 }
             }
-            Event::Fatal(_) => {}
+            Event::Fatal(_) | Event::Quit => {}
         }
     }
 

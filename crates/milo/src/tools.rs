@@ -25,8 +25,8 @@ const SCRIPTED: Duration = Duration::from_secs(20);
 const PEOPLE_LISTED: usize = 80;
 const CHATS: &str = "500";
 const IMSG: [&str; 3] = ["/opt/homebrew/bin/imsg", "/usr/local/bin/imsg", "imsg"];
-const NO_CHATS: &str = "imsg could not read any conversations. The terminal app that runs Milo needs Full Disk Access, under Privacy & Security in System Settings";
-const NO_NAMES: &str = "imsg could read the conversations but not the names of the people in them. The terminal app that runs Milo needs access to Contacts, or Full Disk Access, under Privacy & Security in System Settings";
+const NO_CHATS: &str = "imsg could not read any conversations. Milo, or the terminal app that runs it, needs Full Disk Access, under Privacy & Security in System Settings";
+const NO_NAMES: &str = "imsg could read the conversations but not the names of the people in them. Milo, or the terminal app that runs it, needs access to Contacts, or Full Disk Access, under Privacy & Security in System Settings";
 const NO_IMSG: &str = "nothing was sent: the imsg command is not installed on this Mac. They can install it with: brew install steipete/tap/imsg";
 const MEMORY_LINES: usize = 60;
 const MAX_TIMER: f64 = 24.0 * 3600.0;
@@ -34,8 +34,8 @@ const OLD: usize = 300;
 const ROUNDS: usize = 60;
 const SHOWN: usize = 300;
 
-pub fn unasked() {
-    UNASKED.store(true, Relaxed);
+pub fn unasked(on: bool) {
+    UNASKED.store(on, Relaxed);
 }
 
 fn asking() -> bool {
