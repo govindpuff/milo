@@ -320,11 +320,6 @@ async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
     }
 }
 
-pub async fn warm() {
-    let mut held = SESSION.lock().await;
-    link(&mut held, ALLOW, None).await;
-}
-
 async fn facing(s: &Session) -> (Vec<Value>, Option<String>) {
     let apps = match control(json!({ "op": "around" })).await {
         Ok(answer) => answer["apps"].as_array().cloned().unwrap_or_default(),
