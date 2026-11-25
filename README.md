@@ -182,8 +182,7 @@ cd milo
 
 The script installs the `milo` command, which runs milo in your terminal with
 the same settings. For its options, run `milo --help`. To build the app, run
-`scripts/bundle.sh`. To build a notarized `Milo.dmg`, run
-`scripts/release.sh`.
+`scripts/bundle.sh`.
 
 ## How it works
 

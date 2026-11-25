@@ -185,12 +185,11 @@ shortcuts are Carbon hot keys, which work in any app.
 ## The app
 
 `scripts/bundle.sh` builds `target/Milo.app` from the binary, `uv`, and the
-files in `app`. `scripts/release.sh` has Apple notarize the app and makes
-`target/Milo.dmg`.
+files in `app`.
 
-To release a version, raise `version` in `crates/milo/Cargo.toml`, run
-`scripts/release.sh`, and publish the disk image with the command that the
-script prints.
+To release a version, run `scripts/release.sh VERSION`. The script sets the
+version, has Apple notarize the app, makes `target/Milo.dmg`, and publishes
+it on GitHub as the release `vVERSION`.
 
 When the binary runs inside the app, it writes its output to
 `~/Library/Logs/Milo/milo.log`. Before it loads anything, it asks the panel
