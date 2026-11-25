@@ -78,7 +78,6 @@ case ":$user_path:" in
   *":$cargo_bin:"*) ;;
   *) say "Note: $cargo_bin is not on your PATH yet. Open a new terminal, or add it to PATH." ;;
 esac
-say "Done. Save your OpenAI API key with: milo auth openai"
-say "Then start it with: milo"
-say "The first start downloads the speech and voice models, and macOS asks for microphone access."
+say "Done. Start it with: milo"
+say "The first start asks for your OpenAI API key, downloads the speech and voice models, and macOS asks for microphone access."
 say "More options: milo --help"

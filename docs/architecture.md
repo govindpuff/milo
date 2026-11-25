@@ -24,7 +24,6 @@ microphone -> capture -> speech recognition -+-> controller -> reply -> voice ->
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn). |
 | `crates/llm` | The model client, which streams text and tool calls over chat completions or the OpenAI Responses API, and the sentence chunker. |
 | `crates/voice` | Starts the Python voice server for the Breeze voice, and streams audio from it. |
-| `crates/phonon` | The Phonon voice, which runs in-process. milo uses it when the voice server can't start. |
 | `crates/notch` | Bindings to `swift/MiloNotch`, the panel in the notch. |
 | `crates/control` | Bindings to `swift/MiloControl`, which reads and uses app windows through the macOS Accessibility API. |
 | `crates/browser` | The client for the Chrome DevTools Protocol. |
@@ -156,7 +155,9 @@ A model name is `PROVIDER/MODEL`. `config.rs` has the providers: `openai`,
 `openai/gpt-6.2-sol`.
 
 milo looks for the API key of a provider in `~/.config/milo/auth.json`, and
-then in the provider's environment variable.
+then in the provider's environment variable. If it finds none, it asks for
+the key at start, checks it with a request for the provider's models, and
+saves it in `auth.json`.
 
 milo uses up to three models: the main model, `small_model` for the notes
 about a place, and `vision_model` to find a thing in a picture. The last two

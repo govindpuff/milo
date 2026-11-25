@@ -25,23 +25,18 @@ To hear the voices, watch the [demo video with sound](docs/demo.mp4).
     ./setup.sh
     ```
 
-2.  Save your OpenAI API key:
-
-    ```sh
-    milo auth openai
-    ```
-
-3.  Start milo:
+2.  Start milo:
 
     ```sh
     milo
     ```
 
-    The first start downloads the speech and voice models, which can take
-    several minutes. When macOS asks whether your terminal can use the
-    microphone, allow access.
+    The first start asks for your OpenAI API key, unless `OPENAI_API_KEY` is
+    set, and saves it in `~/.config/milo/auth.json`. It then downloads the
+    speech and voice models, which can take several minutes. When macOS asks
+    whether your terminal can use the microphone, allow access.
 
-4.  When milo prints `listening`, start talking.
+3.  When milo prints `listening`, start talking.
 
 If you use headphones, start milo with `milo --no-aec`. To quit, press
 Control+C.
@@ -118,14 +113,15 @@ providers:
 | `google` | `GEMINI_API_KEY` |
 | `openrouter` | `OPENROUTER_API_KEY` |
 
-1.  Save your API key with `milo auth PROVIDER`, or set the environment
-    variable of the provider.
-2.  To list the models of the provider, run `milo models PROVIDER`.
-3.  Start milo with a model:
+To use another model, name it when you start milo. milo asks for the API key
+of the provider the first time, unless its environment variable is set:
 
-    ```sh
-    milo --model anthropic/MODEL_NAME
-    ```
+```sh
+milo --model anthropic/MODEL_NAME
+```
+
+To list the models of a provider, run `milo models PROVIDER`. To replace or
+remove a saved key, run `milo auth PROVIDER`.
 
 To keep the choice, create `~/.config/milo/config.json`:
 
