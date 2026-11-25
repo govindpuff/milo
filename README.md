@@ -14,7 +14,7 @@ remember what you tell it.
 ## Requirements
 
 - A Mac with Apple silicon and macOS 14 or later
-- An API key for OpenAI, Anthropic, Google, or OpenRouter
+- An OpenAI API key
 
 ## Get started
 
@@ -22,7 +22,7 @@ remember what you tell it.
     open it, and drag Milo to your Applications folder.
 2.  Open Milo. A setup window asks for the following:
 
-    - Your API key
+    - Your OpenAI API key
     - Access to the microphone, Accessibility, and Screen Recording
     - The voice that you want
 
@@ -70,7 +70,7 @@ settings.
 To open the settings, click the **m** in the menu bar, and then click
 **Settings**. You can change the following:
 
-- The provider, its API key, and the model
+- The API key and the model
 - The voice
 - The microphone and the speakers
 - **Headphones**, which turns off echo cancellation
@@ -114,9 +114,10 @@ milo also keeps notes about each app and website that it has worked in, in
 
 ## Change the model
 
-The default model is `openai/gpt-6.2-sol`. In the settings, choose a provider,
-paste its API key, and choose a model. Milo supports OpenAI, Anthropic,
-Google, and OpenRouter.
+milo uses OpenAI models, and the default is `gpt-6.2-sol`. To use another
+one, choose it in the settings.
+
+Support for Anthropic, Google, and OpenRouter models is coming soon.
 
 ## Change the voice
 

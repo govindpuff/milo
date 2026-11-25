@@ -151,8 +151,8 @@ scripts/sandbox.sh pull /tmp/last-run
 
 ## Models
 
-A model name is `PROVIDER/MODEL`. `config.rs` has the providers: `openai`,
-`anthropic`, `google`, and `openrouter`. The default model is
+A model name is `PROVIDER/MODEL`. `config.rs` has the providers, and
+`openai` is the only hosted one for now. The default model is
 `openai/gpt-6.2-sol`.
 
 milo looks for the API key of a provider in `~/.config/milo/auth.json`, and
