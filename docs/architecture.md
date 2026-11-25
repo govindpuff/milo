@@ -263,8 +263,7 @@ which the controller uses for the timing line.
 ### End of a reply
 
 A turn ends when the reply task is done, the voice thread has synthesized every
-job, and playback is empty. The controller then adds the reply to the history
-and starts the follow-up timer.
+job, and playback is empty. The controller then adds the reply to the history.
 
 ### Timing line
 
@@ -272,7 +271,7 @@ After each reply, the controller prints a dim line with the following fields,
 separated by `|`:
 
 - What ended the turn (`turn` with the Smart Turn score, `patience`, `eou`,
-  `timeout`, `trailed off`, `nudge`, or `result`), and how long after your
+  `timeout`, `trailed off`, or `result`), and how long after your
   voice stopped the commit came.
 - `prepared`: when the reply started, relative to the commit. A negative value
   means that the reply started before the commit.
@@ -300,8 +299,8 @@ Either way, the result is one of the following:
 - **Undo.** If the reply hasn't played yet, or started playing less than 1.5
   seconds ago, the controller drops the reply, removes your message from the
   history, and keeps your words as a *carry*. The carry is prefixed to your
-  next message, so the next reply answers everything that you said. Follow-ups
-  and tool results are never undone.
+  next message, so the next reply answers everything that you said. Tool
+  results are never undone.
 - **Interrupt.** Later in the reply, the controller stops the voice, aborts the
   reply task, and flushes playback. Aborting the reply task drops the response
   stream, which asks the server to cancel the request. The history records the
@@ -340,14 +339,6 @@ milo uses the bank in the following ways:
   most once every 6 seconds.
 
 `--no-backchannel` turns off the listening sounds.
-
-## Follow-ups
-
-After a reply ends, if milo detects no voice for `--nudge-ms` (6 seconds), the
-controller commits a turn whose message is `(silence)`, and the model follows
-up the way that a person on a call does. The second wait is three times as
-long. After two follow-ups, milo stays quiet until you speak. Follow-ups wait
-while a tool runs.
 
 ## History and the prompt cache
 
@@ -723,8 +714,9 @@ area. Afterward it reads the control and puts what it contains in the result.
 Typed text and key presses go to the app's process as key events, so they
 don't reach the app that you're using.
 
-The `go` tool handles a web address differently from an app name. For an
-address, milo uses a browser window of its own. The first time, it sends
+The `go` tool handles a web address differently from an app name. If a tab
+already has that exact address open, milo works in that tab. Otherwise, milo
+uses a browser window of its own. The first time, it sends
 Command+N to the default browser, which brings the browser to the front, and
 then brings back the app that was in front. After that, it puts the address in
 that window's address field and presses Return, which doesn't bring the

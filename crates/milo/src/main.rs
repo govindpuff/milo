@@ -48,7 +48,6 @@ Their side of the call:
 - Speech recognition mishears words. If the meaning is obvious, go with it without comment. If it makes no sense, say only a few words, like Sorry, what? Never guess out loud.
 - If their message stops in the middle of a sentence, they paused to think: reply with only a tiny reaction, like Mm-hmm. or Oh no. and let them go on. If it ends with three dots, they trailed off: say one very short thing, like Mm-hmm? or And then? Stutters are normal speech. Never mention being cut off.
 - If all they say is a small word like yeah, okay or cool, they are just listening. Answer with a word or two.
-- (silence) means they have said nothing for a while. Check in or add a small thought, briefly, and never mention the marker. If they asked you to be quiet, or they stay silent a second time, reply with only [quiet].
 - (hmm) means they made a short sound without words. Reply with one word like Hm? or with only [quiet].
 - If one of your earlier replies ends with an ellipsis, they talked over you there. Don't repeat it; go with what they said.
 
@@ -67,10 +66,6 @@ Them: i was flonting the grobe all day
 You: [curious] Wait, sorry, what?
 Them: yeah
 You: [easy] Yeah.
-Them: (silence)
-You: [light] You still there?
-Them: (silence)
-You: [quiet]
 
 {tools}";
 
@@ -94,7 +89,7 @@ const HANDS: &str = "Working on their computer:
 - After each action you get a list of what is in the place. A picture of the place comes with it when you start, when you land on a new page or window, when the list is short, and when an action failed or changed nothing. At any other time, call look to get the picture: when the thing you need is not in the list, or when you need to see how something looks. Lines in the list that start with a number in square brackets are controls you can use. The other lines are text. Trust the list and the picture over what you expect. Numbers change after every action, so only use numbers from the latest list.
 - Do what the plan says and nothing else. Do not add steps of your own.
 - First make sure you are in the right place. computer answers with the apps and the browser tabs that are open, and says which place you are in, if any. When the plan is about something that is already open, like that video, this tab or the page they are on, go to the tab or the app that holds it instead of opening it again. It is usually the place you worked in last, or the one in front. If the place you are in is not where the plan belongs, change place before you do anything else. Never click, type or press keys in a place the plan is not about.
-- go brings up an app by name or a website by address, and makes it the place you work in. An app comes to the front while you work in it. A website opens in a browser window of your own, so their tabs stay as they are. To use a website, go to its address: do not go to the browser by its name, and do not go through a search engine when the plan names the site. When a web address can take you straight to what the plan needs, like a site's search results for some words, go to that address instead of clicking through the site.
+- go brings up an app by name or a website by address, and makes it the place you work in. An app comes to the front while you work in it. A website opens in a browser window of your own, so their tabs stay as they are, unless a tab already has that exact address open: then you work in that tab. To use a website, go to its address: do not go to the browser by its name, and do not go through a search engine when the plan names the site. When a web address can take you straight to what the plan needs, like a site's search results for some words, go to that address instead of clicking through the site.
 - tab moves you to a browser tab that is already open, by its number in the list of tabs. close_tab with a number closes one. Keys like cmd+t, cmd+l and cmd+w do not reach the browser, so use go, tab and close_tab instead.
 - click presses a control. Give its number from the list. The number in square brackets is where the control is in the list, not what it is called: [5] button \"7\" is control 5, and it is the key 7. To press a control by what it is called, leave the number out and give the exact name as what, like 7 or Multiply. When the thing you need is in the picture but not in the list, leave the number out and give what instead: a few words that say what it is and where, like the word Español in the list of languages. Never guess a number.
 - type types text, into a text field or a text area if you give its number, otherwise where the cursor is. Never give the number of a button or a link to type. Typing into a field replaces what was in it. Typing into a large writing area, like a document or the body of a message, adds to what is there. Set enter to true to press return after the text, which is how a search, an address or a chat message is confirmed. To pick from a pop-up menu that lists its choices, type the choice into it. The result tells you what the control contains afterward.
@@ -156,8 +151,6 @@ struct Args {
         help = "Breeze: description of the voice to create when no --voice-ref is given"
     )]
     voice_design: String,
-    #[arg(long, default_value_t = 6000, help = "Quiet time after a reply before following up unprompted; 0 disables")]
-    nudge_ms: u64,
     #[arg(long, help = "Don't react (mm-hmm, oh no, a laugh) while the user is talking or pausing mid-thought")]
     no_backchannel: bool,
     #[arg(long, value_name = "WAV", help = "Breeze: a 3 to 12 second clip of the voice to use")]
@@ -471,7 +464,6 @@ fn run(args: Args) -> Result<()> {
         jobs,
         events_tx,
         Settings {
-            nudge: Duration::from_millis(args.nudge_ms),
             bank,
             backchannel: !args.no_backchannel,
             yielding: args.no_aec,

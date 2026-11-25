@@ -176,6 +176,8 @@ Chromium.
 
 - milo opens websites in a browser window of its own, behind your other
   windows, and leaves your tabs as they are.
+- If a tab already has the exact address open, milo works in that tab instead
+  of opening the address again.
 - milo can also work in a tab that you already have open. For example, you can
   ask it to pause the video that is playing, or to close a tab.
 - milo remembers where it worked last. You can ask for one thing, and then
@@ -445,7 +447,6 @@ US dollars for each million tokens:
 | `--dangerously-auto-approve` | Runs every command and plan without asking for approval. The panel stays on. |
 | `--no-tools` | Turns off tools and memory. |
 | `--no-backchannel` | Turns off the listening sounds while you talk. |
-| `--nudge-ms` | How long milo waits in silence before it follows up, in milliseconds. The default is `6000`. To turn off follow-ups, set it to `0`. |
 | `--input-device`, `--output-device` | The microphone or the speakers, by name. |
 | `--list-devices` | Lists the audio devices and exits. |
 | `--task`, `--step` | Carries out one task in your apps without the voice, and exits. To give a plan, repeat `--step` for each step. |
