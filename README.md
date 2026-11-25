@@ -11,10 +11,6 @@ phone call. You can talk over it to interrupt. It can also check the weather,
 set timers, open apps, use apps and websites for you, send text messages, and
 remember what you tell it.
 
-[![A one-minute demo of milo and its panel in the notch](docs/demo.gif)](docs/demo.mp4)
-
-To hear the voices, watch the [demo video with sound](docs/demo.mp4).
-
 ## Requirements
 
 - A Mac with Apple silicon and macOS 14 or later
