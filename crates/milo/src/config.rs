@@ -15,10 +15,13 @@ struct Known {
     api: Api,
     env: &'static str,
     limit: Option<&'static str>,
+    check: &'static str,
+    refuses: &'static [&'static str],
+    headers: &'static [(&'static str, &'static str)],
 }
 
 const fn known(id: &'static str, url: &'static str, env: &'static str) -> Known {
-    Known { id, url, api: Api::Chat, env, limit: None }
+    Known { id, url, api: Api::Chat, env, limit: None, check: "models", refuses: REFUSED, headers: &[] }
 }
 
 const KNOWN: &[Known] = &[
@@ -29,10 +32,19 @@ const KNOWN: &[Known] = &[
         api: Api::Responses,
         env: "OPENAI_API_KEY",
         limit: Some("max_completion_tokens"),
+        check: "models",
+        refuses: REFUSED,
+        headers: &[],
     },
-    known("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
-    known("google", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
-    known("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    Known {
+        headers: &[("anthropic-version", "2023-06-01")],
+        ..known("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY")
+    },
+    Known {
+        refuses: &["answered 400", "answered 401", "answered 403"],
+        ..known("google", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY")
+    },
+    Known { check: "key", ..known("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY") },
 ];
 
 struct Rate {
@@ -85,7 +97,7 @@ const RATES: &[Rate] = &[
     rate("gpt-6.1-sol-healthcare", 2.0, 0.1, 10.0, 2.0),
 ];
 
-const REFUSED: [&str; 2] = ["answered 401", "answered 403"];
+const REFUSED: &[&str] = &["answered 401", "answered 403"];
 const ULTRAFAST: f64 = 6.0;
 const PROMOTED: f64 = 3.0;
 const PROMOTION_ENDS: (i16, i8, i8) = (2027, 3, 1);
@@ -203,7 +215,8 @@ impl Config {
     pub fn ask(&mut self, name: &str, port: u16) -> Result<()> {
         let (id, _) = self.split(name.trim());
         let id = id.to_string();
-        let env = KNOWN.iter().find(|known| known.id == id).map_or("", |known| known.env);
+        let Some(known) = KNOWN.iter().find(|known| known.id == id) else { return Ok(()) };
+        let env = known.env;
         if env.is_empty() || self.key(&id)?.is_some() || !std::io::stdin().is_terminal() {
             return Ok(());
         }
@@ -214,9 +227,9 @@ impl Config {
                 bail!("there is no API key for {id}: run `milo auth {id}`, or set {env}");
             }
             self.keys.insert(id.clone(), key.into());
-            let listed = rt.block_on(self.chosen(&format!("{id}/any"), port)?.llm.models());
+            let listed = rt.block_on(self.chosen(&format!("{id}/any"), port)?.llm.check(known.check));
             match listed {
-                Err(e) if REFUSED.iter().any(|code| format!("{e:#}").contains(code)) => {
+                Err(e) if known.refuses.iter().any(|code| format!("{e:#}").contains(code)) => {
                     self.keys.remove(&id);
                     eprintln!("{id} refused that key. Try again, or press Return to quit.");
                 }
@@ -266,7 +279,11 @@ impl Config {
         if key.is_none() && !env.is_empty() {
             bail!("there is no API key for {id}: run `milo auth {id}`, or set {env}");
         }
-        let mut headers = Vec::new();
+        let mut headers: Vec<(String, String)> = known
+            .into_iter()
+            .flat_map(|known| known.headers)
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
         for (name, value) in set["headers"].as_object().into_iter().flatten() {
             headers.push((name.clone(), filled(value.as_str().unwrap_or_default())?));
         }

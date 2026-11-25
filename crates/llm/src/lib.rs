@@ -393,6 +393,16 @@ impl Llm {
         self.collect(messages, Some(tools), REPLY_TOKENS).await
     }
 
+    pub async fn check(&self, path: &str) -> Result<()> {
+        let req = self.send(self.inner.http.get(format!("{}/{path}", self.inner.base))).timeout(LIST_TIMEOUT);
+        let resp = req.send().await.with_context(|| format!("request to {}", self.inner.base))?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("{} answered {status}: {}", self.inner.base, resp.text().await.unwrap_or_default());
+        }
+        Ok(())
+    }
+
     pub async fn models(&self) -> Result<Vec<String>> {
         let req = self.send(self.inner.http.get(format!("{}/models", self.inner.base))).timeout(LIST_TIMEOUT);
         let resp = req.send().await.with_context(|| format!("request to {}", self.inner.base))?;

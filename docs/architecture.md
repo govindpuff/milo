@@ -156,7 +156,7 @@ A model name is `PROVIDER/MODEL`. `config.rs` has the providers: `openai`,
 
 milo looks for the API key of a provider in `~/.config/milo/auth.json`, and
 then in the provider's environment variable. If it finds none, it asks for
-the key at start, checks it with a request for the provider's models, and
+the key at start, checks it with a request to the provider, and
 saves it in `auth.json`.
 
 milo uses up to three models: the main model, `small_model` for the notes
