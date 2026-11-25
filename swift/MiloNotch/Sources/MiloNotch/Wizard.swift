@@ -299,13 +299,15 @@ struct Wizard: View {
 
     @ViewBuilder var connect: some View {
         VStack(spacing: 22) {
-            Heading(title: "Connect a model", detail: "Milo thinks with a model from one of these providers. Paste your API key.")
+            Heading(title: "Connect a model", detail: "Milo thinks with a model from \(named(id)). Paste your API key.")
             VStack(spacing: 10) {
-                Picker("", selection: provider) {
-                    ForEach(desk.providers) { Text(named($0.id)).tag($0.id) }
+                if desk.providers.count > 1 {
+                    Picker("", selection: provider) {
+                        ForEach(desk.providers) { Text(named($0.id)).tag($0.id) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
                 Tile {
                     HStack(spacing: 10) {
                         Image(systemName: "key.fill").foregroundStyle(Look.faint)

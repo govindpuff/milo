@@ -48,7 +48,7 @@ struct Save: Encodable {
 }
 
 func named(_ provider: String) -> String {
-    ["openai": "OpenAI", "anthropic": "Anthropic", "google": "Google", "openrouter": "OpenRouter"][provider] ?? provider
+    provider == "openai" ? "OpenAI" : provider
 }
 
 @MainActor
@@ -283,8 +283,10 @@ struct SettingsView: View {
 
     @ViewBuilder var model: some View {
         Section("Model") {
-            Picker("Provider", selection: provider) {
-                ForEach(ids, id: \.self) { Text(named($0)).tag($0) }
+            if ids.count > 1 {
+                Picker("Provider", selection: provider) {
+                    ForEach(ids, id: \.self) { Text(named($0)).tag($0) }
+                }
             }
             LabeledContent("API key") {
                 SecureField("", text: $key, prompt: Text(desk.keyed(id) ? "Saved" : "Paste your key"))

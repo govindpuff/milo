@@ -31,36 +31,17 @@ struct Known {
     api: Api,
     env: &'static str,
     limit: Option<&'static str>,
-    check: &'static str,
-    refuses: &'static [&'static str],
-    headers: &'static [(&'static str, &'static str)],
-}
-
-const fn known(id: &'static str, url: &'static str, env: &'static str) -> Known {
-    Known { id, url, api: Api::Chat, env, limit: None, check: "models", refuses: REFUSED, headers: &[] }
 }
 
 const KNOWN: &[Known] = &[
-    known(LOCAL, "", ""),
+    Known { id: LOCAL, url: "", api: Api::Chat, env: "", limit: None },
     Known {
         id: "openai",
         url: "https://api.openai.com/v1",
         api: Api::Responses,
         env: "OPENAI_API_KEY",
         limit: Some("max_completion_tokens"),
-        check: "models",
-        refuses: REFUSED,
-        headers: &[],
     },
-    Known {
-        headers: &[("anthropic-version", "2023-06-01")],
-        ..known("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY")
-    },
-    Known {
-        refuses: &["answered 400", "answered 401", "answered 403"],
-        ..known("google", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY")
-    },
-    Known { check: "key", ..known("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY") },
 ];
 
 struct Rate {
@@ -113,7 +94,6 @@ const RATES: &[Rate] = &[
     rate("gpt-6.1-sol-healthcare", 2.0, 0.1, 10.0, 2.0),
 ];
 
-const OTHER: &[&str] = &["embedding", "image", "tts", "audio", "live", "robotics", "computer-use"];
 const REFUSED: &[&str] = &["answered 401", "answered 403"];
 const ULTRAFAST: f64 = 6.0;
 const PROMOTED: f64 = 3.0;
@@ -309,11 +289,7 @@ impl Config {
         if key.is_none() && !env.is_empty() {
             bail!("there is no API key for {id}: run `milo auth {id}`, or set {env}");
         }
-        let mut headers: Vec<(String, String)> = known
-            .into_iter()
-            .flat_map(|known| known.headers)
-            .map(|(name, value)| (name.to_string(), value.to_string()))
-            .collect();
+        let mut headers: Vec<(String, String)> = Vec::new();
         for (name, value) in set["headers"].as_object().into_iter().flatten() {
             headers.push((name.clone(), filled(value.as_str().unwrap_or_default())?));
         }
@@ -339,11 +315,13 @@ impl Config {
 
 pub fn enter(id: &str, key: &str, port: u16) -> Result<bool> {
     let mut config = Config::load()?;
-    let known = KNOWN.iter().find(|known| known.id == id).ok_or_else(|| anyhow!("there is no provider called {id}"))?;
+    if !config.has(id) {
+        bail!("there is no provider called {id}");
+    }
     config.keys.insert(id.to_string(), key.trim().into());
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    match rt.block_on(config.chosen(&format!("{id}/any"), port)?.llm.check(known.check)) {
-        Err(e) if known.refuses.iter().any(|code| format!("{e:#}").contains(code)) => Ok(false),
+    match rt.block_on(config.chosen(&format!("{id}/any"), port)?.llm.check("models")) {
+        Err(e) if REFUSED.iter().any(|code| format!("{e:#}").contains(code)) => Ok(false),
         Err(e) => Err(e.context(format!("could not check the key for {id}"))),
         Ok(()) => save(&config.keys).map(|_| true),
     }
@@ -377,30 +355,16 @@ pub fn offered(id: &str, port: u16) -> Result<Vec<String>> {
     let mut names: Vec<String> = rt
         .block_on(chosen.llm.models())?
         .iter()
-        .filter_map(|model| Some((model, model["id"].as_str().or_else(|| model["name"].as_str())?)))
-        .filter(|(model, name)| talks(id, name, model))
-        .map(|(_, name)| name.to_string())
+        .filter_map(|model| model["id"].as_str().or_else(|| model["name"].as_str()))
+        .filter(|name| talks(id, name))
+        .map(str::to_string)
         .collect();
     names.sort();
     Ok(names)
 }
 
-fn talks(id: &str, name: &str, model: &Value) -> bool {
-    let has = |list: &Value, item: &str| list.as_array().is_some_and(|list| list.iter().any(|have| have == item));
-    match id {
-        "openai" => RATES.iter().any(|rate| rate.model == name),
-        "google" => {
-            let name = name.strip_prefix("models/").unwrap_or(name);
-            name.starts_with("gemini") && !OTHER.iter().any(|kind| name.contains(kind))
-        }
-        "openrouter" => {
-            let made = &model["architecture"]["output_modalities"];
-            has(made, "text")
-                && made.as_array().is_some_and(|made| made.len() == 1)
-                && has(&model["supported_parameters"], "tools")
-        }
-        _ => true,
-    }
+fn talks(id: &str, name: &str) -> bool {
+    id != "openai" || RATES.iter().any(|rate| rate.model == name)
 }
 
 fn typed(ask: &str) -> Result<String> {

@@ -119,7 +119,7 @@ struct Args {
     #[arg(
         long,
         value_name = "PROVIDER/MODEL",
-        help = "Model to talk and act with, from openai, anthropic, google or openrouter, like anthropic/MODEL; local/MODEL is served on this Mac by Rapid-MLX [default: the model in config.json, or openai/gpt-6.2-sol]"
+        help = "Model to talk and act with, like openai/MODEL; local/MODEL is served on this Mac by Rapid-MLX [default: the model in config.json, or openai/gpt-6.2-sol]"
     )]
     model: Option<String>,
     #[arg(
@@ -176,7 +176,7 @@ struct Args {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    #[command(about = "Save the API key of a provider, like openai or anthropic")]
+    #[command(about = "Save the API key of a provider, like openai")]
     Auth { provider: String },
     #[command(about = "List the providers, or the models that one provider offers")]
     Models { provider: Option<String> },
