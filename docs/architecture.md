@@ -188,19 +188,9 @@ shortcuts are Carbon hot keys, which work in any app.
 files in `app`. `scripts/release.sh` has Apple notarize the app and makes
 `target/Milo.dmg`.
 
-To release a version, raise `version` in `crates/milo/Cargo.toml` on `main`,
-and then run the **Release** workflow on GitHub, or run
-`gh workflow run release.yml`. The workflow builds, signs, and notarizes the
-disk image, and publishes it as the release `vVERSION`. It needs the
-following repository secrets:
-
-| Secret | Contents |
-|---|---|
-| `DEVELOPER_ID_P12` | The Developer ID Application certificate and its key, as a Base64-encoded `.p12` file. |
-| `DEVELOPER_ID_P12_PASSWORD` | The password of the `.p12` file. |
-| `APPLE_ID` | The Apple ID that notarizes the app. |
-| `APPLE_TEAM_ID` | The team ID of the developer account. |
-| `APPLE_APP_PASSWORD` | An app-specific password for the Apple ID. |
+To release a version, raise `version` in `crates/milo/Cargo.toml`, run
+`scripts/release.sh`, and publish the disk image with the command that the
+script prints.
 
 When the binary runs inside the app, it writes its output to
 `~/Library/Logs/Milo/milo.log`. Before it loads anything, it asks the panel
