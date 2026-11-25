@@ -681,6 +681,12 @@ async fn exists(s: &Session, tab: &str) -> bool {
     }
 }
 
+fn plain(address: &str) -> String {
+    let address = address.split('#').next().unwrap_or(address);
+    let address = address.split_once("://").map_or(address, |(_, rest)| rest);
+    address.strip_prefix("www.").unwrap_or(address).trim_end_matches('/').to_lowercase()
+}
+
 async fn visit(s: &mut Session, what: &str) -> Result<String> {
     let address = if what.contains("://") { what.to_string() } else { format!("https://{what}") };
     let kept = match s.mine.clone() {
@@ -688,6 +694,14 @@ async fn visit(s: &mut Session, what: &str) -> Result<String> {
         _ => None,
     };
     let Some(browser) = &s.browser else { bail!(UNLINKED) };
+    let open = browser.tabs().await.unwrap_or_default();
+    if let Some(have) = open.iter().find(|have| plain(&have.url) == plain(&address)) {
+        if !s.tabs.contains(&have.id) {
+            s.tabs.push(have.id.clone());
+        }
+        s.place = Place::Tab(have.id.clone());
+        return Ok(format!("{what} was already open, and you are in that tab now: {}", tools::clip(&have.title)));
+    }
     let tab = match kept {
         Some(tab) => tab,
         None => browser.create().await?,
