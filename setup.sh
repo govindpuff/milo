@@ -58,11 +58,6 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-if ! command -v rapid-mlx >/dev/null 2>&1; then
-  say "Installing Rapid-MLX"
-  uv tool install rapid-mlx==1.1.0
-fi
-
 if ! command -v imsg >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
   say "Installing imsg, which sends text messages"
   brew install steipete/tap/imsg || true
@@ -83,6 +78,7 @@ case ":$user_path:" in
   *":$cargo_bin:"*) ;;
   *) say "Note: $cargo_bin is not on your PATH yet. Open a new terminal, or add it to PATH." ;;
 esac
-say "Done. Start it with: milo"
-say "The first start downloads the models (several GB), and macOS asks for microphone access."
+say "Done. Save your OpenAI API key with: milo auth openai"
+say "Then start it with: milo"
+say "The first start downloads the speech and voice models, and macOS asks for microphone access."
 say "More options: milo --help"

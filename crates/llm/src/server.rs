@@ -168,7 +168,7 @@ fn find_binary() -> Result<PathBuf> {
         }
     }
     bail!(
-        "{NAME} not found on PATH or in ~/.local/bin; run ./setup.sh, or pick a model from another provider with --model"
+        "{NAME} not found on PATH or in ~/.local/bin; install it with `uv tool install rapid-mlx==1.1.0`, or pick a hosted model with --model"
     )
 }
 

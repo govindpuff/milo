@@ -7,7 +7,7 @@ use llm::{Api, Host, Llm, Price};
 use serde_json::{Map, Value, json};
 
 pub const LOCAL: &str = "local";
-pub const DEFAULT: &str = "local/gemma-4-26b-qat-4bit";
+pub const DEFAULT: &str = "openai/gpt-6.2-sol";
 
 struct Known {
     id: &'static str,
@@ -33,15 +33,6 @@ const KNOWN: &[Known] = &[
     known("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
     known("google", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
     known("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
-    known("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
-    known("cerebras", "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY"),
-    known("xai", "https://api.x.ai/v1", "XAI_API_KEY"),
-    known("mistral", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
-    known("deepseek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-    known("together", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
-    known("fireworks", "https://api.fireworks.ai/inference/v1", "FIREWORKS_API_KEY"),
-    known("ollama", "http://127.0.0.1:11434/v1", ""),
-    known("lmstudio", "http://127.0.0.1:1234/v1", ""),
 ];
 
 struct Rate {

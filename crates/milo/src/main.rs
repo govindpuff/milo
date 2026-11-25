@@ -113,14 +113,14 @@ const STATUS_POLL: Duration = Duration::from_millis(100);
 const WARMUP_TEXT: &str = "Hello there, I'm ready when you are.";
 
 #[derive(Parser)]
-#[command(name = "milo", about = "A local voice assistant for Apple Silicon Macs: talk to it and it talks back.")]
+#[command(name = "milo", about = "A voice assistant for Apple Silicon Macs: talk to it and it talks back.")]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
     #[arg(
         long,
         value_name = "PROVIDER/MODEL",
-        help = "Model to talk and act with, like openai/gpt-6.2-sol or ollama/qwen3; a name without a provider is served on this Mac by Rapid-MLX [default: the model in config.json, or local/gemma-4-26b-qat-4bit]"
+        help = "Model to talk and act with, from openai, anthropic, google or openrouter, like anthropic/MODEL; local/MODEL is served on this Mac by Rapid-MLX [default: the model in config.json, or openai/gpt-6.2-sol]"
     )]
     model: Option<String>,
     #[arg(
