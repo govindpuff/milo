@@ -219,6 +219,10 @@ impl Voice {
         Ok(Voice { agent, url: format!("{base}/speak"), child: held.take() })
     }
 
+    pub fn remote(&self) -> Voice {
+        Voice { agent: self.agent.clone(), url: self.url.clone(), child: None }
+    }
+
     pub fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }

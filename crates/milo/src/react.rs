@@ -1,6 +1,7 @@
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 
 use voice::Voice;
 
@@ -62,26 +63,48 @@ pub enum Probe {
 }
 
 pub struct Bank {
-    clips: Vec<Vec<Vec<f32>>>,
-    order: Vec<(usize, &'static str)>,
+    clips: RwLock<Vec<Vec<Vec<f32>>>>,
+    order: RwLock<Vec<(usize, &'static str)>>,
+}
+
+fn order(clips: &[Vec<Vec<f32>>]) -> Vec<(usize, &'static str)> {
+    let mut order: Vec<(usize, &'static str)> = SPECS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !clips[*i].is_empty())
+        .flat_map(|(i, s)| s.aliases.iter().map(move |a| (i, *a)))
+        .collect();
+    order.sort_by_key(|(_, a)| std::cmp::Reverse(a.len()));
+    order
+}
+
+fn file(dir: &Option<PathBuf>, voice_id: &str, s: &Spec, variant: usize, rate: usize) -> Option<PathBuf> {
+    dir.as_ref().map(|d| d.join(format!("{:016x}.f32", key(voice_id, s, variant, rate))))
 }
 
 impl Bank {
-    pub fn build(engine: &Voice, voice_id: &str) -> Bank {
+    pub fn build(engine: &Voice, voice_id: &str) -> Arc<Bank> {
         let rate = engine.sample_rate() as usize;
         let dir = cache_dir();
-        let mut clips = Vec::with_capacity(SPECS.len());
+        let saved = |s: &Spec, v: usize| file(&dir, voice_id, s, v, rate).as_deref().and_then(load);
+        let clips: Vec<Vec<Vec<f32>>> =
+            SPECS.iter().map(|s| (0..VARIANTS).filter_map(|v| saved(s, v)).collect()).collect();
+        let bank = Arc::new(Bank { order: RwLock::new(order(&clips)), clips: RwLock::new(clips) });
+        let (filling, engine, voice_id) = (bank.clone(), engine.remote(), voice_id.to_string());
+        std::thread::spawn(move || filling.fill(&engine, &voice_id, rate, &dir));
+        bank
+    }
+
+    fn fill(&self, engine: &Voice, voice_id: &str, rate: usize, dir: &Option<PathBuf>) {
         let mut made = 0;
-        for s in SPECS {
-            let mut variants = Vec::new();
+        for (i, s) in SPECS.iter().enumerate() {
             for v in 0..VARIANTS {
-                let path = dir.as_ref().map(|d| d.join(format!("{:016x}.f32", key(voice_id, s, v, rate))));
-                if let Some(pcm) = path.as_deref().and_then(load) {
-                    variants.push(pcm);
+                let path = file(dir, voice_id, s, v, rate);
+                if path.as_deref().and_then(load).is_some() {
                     continue;
                 }
                 if made == 0 {
-                    log::info!("recording the voice's reactions (first run only)");
+                    log::info!("recording the voice's reactions in the background (once for each voice)");
                 }
                 made += 1;
                 let mut pcm: Vec<f32> = Vec::new();
@@ -92,7 +115,7 @@ impl Bank {
                     });
                 if let Err(e) = done {
                     log::warn!("could not record {:?}: {e:#}", s.say);
-                    continue;
+                    return;
                 }
                 let pcm = tidy(&pcm, rate);
                 if pcm.is_empty() || pcm.len() > rate * MAX_SECS {
@@ -101,33 +124,27 @@ impl Bank {
                 if let Some(p) = &path {
                     save(p, &pcm);
                 }
-                variants.push(pcm);
+                let mut clips = self.clips.write().unwrap();
+                clips[i].push(pcm);
+                *self.order.write().unwrap() = order(&clips);
             }
-            if let Some(first) = variants.first()
-                && let Err(e) = engine.lead(clips.len(), s.say, first)
+            let first = self.clips.read().unwrap()[i].first().cloned();
+            if let Some(first) = first
+                && let Err(e) = engine.lead(i, s.say, &first)
             {
                 log::debug!("{e:#}");
             }
-            clips.push(variants);
         }
-        let mut order: Vec<(usize, &'static str)> = SPECS
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !clips[*i].is_empty())
-            .flat_map(|(i, s)| s.aliases.iter().map(move |a| (i, *a)))
-            .collect();
-        order.sort_by_key(|(_, a)| std::cmp::Reverse(a.len()));
-        Bank { clips, order }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.order.is_empty()
+        self.order.read().unwrap().is_empty()
     }
 
-    pub fn clip(&self, key: usize, n: usize) -> &[f32] {
-        match self.clips.get(key) {
-            Some(v) if !v.is_empty() => &v[n % v.len()],
-            _ => &[],
+    pub fn clip(&self, key: usize, n: usize) -> Vec<f32> {
+        match self.clips.read().unwrap().get(key) {
+            Some(v) if !v.is_empty() => v[n % v.len()].clone(),
+            _ => Vec::new(),
         }
     }
 
@@ -136,13 +153,15 @@ impl Bank {
     }
 
     pub fn generic(&self, n: usize) -> Option<usize> {
+        let clips = self.clips.read().unwrap();
         let keys: Vec<usize> =
-            SPECS.iter().enumerate().filter(|(i, s)| s.generic && !self.clips[*i].is_empty()).map(|(i, _)| i).collect();
+            SPECS.iter().enumerate().filter(|(i, s)| s.generic && !clips[*i].is_empty()).map(|(i, _)| i).collect();
         (!keys.is_empty()).then(|| keys[n % keys.len()])
     }
 
     pub fn probe(&self, text: &str, end: bool) -> Probe {
-        if self.order.is_empty() {
+        let order = self.order.read().unwrap().clone();
+        if order.is_empty() {
             return Probe::Miss;
         }
         let lead = text.len() - text.trim_start().len();
@@ -152,7 +171,7 @@ impl Bank {
         }
         let lower = body.to_ascii_lowercase();
         let mut wait = false;
-        for (key, alias) in &self.order {
+        for (key, alias) in &order {
             if let Some(after) = lower.strip_prefix(alias) {
                 let sound = alias.ends_with(')');
                 let mut tail = after.chars();

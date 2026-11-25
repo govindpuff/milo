@@ -891,7 +891,7 @@ impl Controller {
         if let Some(key) = t.opener.filter(|_| !t.opener_played) {
             t.opener_played = true;
             self.last_opener = Some(key);
-            self.playback.write(self.settings.bank.clip(key, self.react_n));
+            self.playback.write(&self.settings.bank.clip(key, self.react_n));
             self.react_n += 1;
         }
         self.gate.commit(t.id);
@@ -939,7 +939,7 @@ impl Controller {
         if t.committed && !t.opener_played {
             t.opener_played = true;
             self.last_opener = Some(key);
-            self.playback.write(self.settings.bank.clip(key, self.react_n));
+            self.playback.write(&self.settings.bank.clip(key, self.react_n));
             self.react_n += 1;
         }
         self.on_chunk(id, text);

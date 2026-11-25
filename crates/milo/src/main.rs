@@ -436,7 +436,7 @@ fn run(args: Args) -> Result<()> {
         args.voice_ref,
         args.voice_text
     );
-    let bank = Arc::new(Bank::build(&engine, &voice_id));
+    let bank = Bank::build(&engine, &voice_id);
     let (jobs, tts_thread) = tts::spawn(engine, gate.clone(), events_tx.clone())?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
