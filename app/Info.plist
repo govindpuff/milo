@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Milo</string>
+  <key>CFBundleDisplayName</key>
+  <string>Milo</string>
+  <key>CFBundleIdentifier</key>
+  <string>tech.govind.milo</string>
+  <key>CFBundleExecutable</key>
+  <string>milo</string>
+  <key>CFBundleIconFile</key>
+  <string>Milo</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>VERSION</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Milo listens to you through the microphone.</string>
+</dict>
+</plist>
