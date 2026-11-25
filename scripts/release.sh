@@ -11,14 +11,14 @@ PROFILE="${MILO_NOTARY:-milo}"
 
 if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     cat <<TEXT
-Usage: scripts/release.sh [VERSION]
+Usage: scripts/release.sh patch|minor|major
 
 Releases Milo: builds Milo.app, has Apple notarize it, makes target/Milo.dmg,
-and publishes it on GitHub as the release vVERSION.
+and publishes it on GitHub.
 
-With VERSION, such as 0.2.0, the script first sets that version in
-crates/milo/Cargo.toml and commits the change. Without it, the script
-releases the version that is already there.
+The new version is the latest release with one part raised: patch takes
+0.1.0 to 0.1.1, minor takes it to 0.2.0, and major takes it to 1.0.0. The
+script sets that version in crates/milo/Cargo.toml and commits the change.
 
 This needs a Developer ID Application certificate in your keychain, the gh
 command signed in to GitHub, and notarization credentials saved one time
@@ -45,10 +45,18 @@ git() {
 gh auth status >/dev/null 2>&1 || fail "The gh command isn't signed in. Run: gh auth login"
 
 WAS="$(sed -n 's/^version = "\(.*\)"/\1/p' "$MANIFEST" | head -1)"
-VERSION="${1:-$WAS}"
-if gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1; then
-    fail "Milo $VERSION is already released. Give a newer version: scripts/release.sh VERSION"
-fi
+LATEST="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null | sed 's/^v//')"
+LATEST="${LATEST:-0.0.0}"
+MAJOR="$(echo "$LATEST" | cut -d. -f1)"
+MINOR="$(echo "$LATEST" | cut -d. -f2)"
+PATCH="$(echo "$LATEST" | cut -d. -f3)"
+case "$1" in
+patch) VERSION="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+minor) VERSION="$MAJOR.$((MINOR + 1)).0" ;;
+major) VERSION="$((MAJOR + 1)).0.0" ;;
+*) fail "Say which part of the version to raise: scripts/release.sh patch, minor, or major. The latest release is $LATEST." ;;
+esac
+echo "Releasing Milo $VERSION (the latest release is $LATEST)"
 
 if [ "$VERSION" != "$WAS" ]; then
     sed -i '' "1,/^version = /s/^version = .*/version = \"$VERSION\"/" "$MANIFEST"

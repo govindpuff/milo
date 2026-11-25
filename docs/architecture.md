@@ -187,9 +187,9 @@ shortcuts are Carbon hot keys, which work in any app.
 `scripts/bundle.sh` builds `target/Milo.app` from the binary, `uv`, and the
 files in `app`.
 
-To release a version, run `scripts/release.sh VERSION`. The script sets the
-version, has Apple notarize the app, makes `target/Milo.dmg`, and publishes
-it on GitHub as the release `vVERSION`.
+To release a version, run `scripts/release.sh` with `patch`, `minor`, or
+`major`. The script raises that part of the latest release's version, has
+Apple notarize the app, makes `target/Milo.dmg`, and publishes it on GitHub.
 
 When the binary runs inside the app, it writes its output to
 `~/Library/Logs/Milo/milo.log`. Before it loads anything, it asks the panel
