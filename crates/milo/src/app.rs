@@ -51,13 +51,28 @@ pub fn settle() -> Result<()> {
     Ok(())
 }
 
-pub fn setup(names: impl Fn(&Config) -> [String; 3]) -> Result<()> {
+fn voiced(port: u16) -> Result<voice::VoiceConfig> {
+    let config = Config::load()?;
+    Ok(voice::VoiceConfig {
+        design: config.named("voice_design").unwrap_or_else(|| config::VOICE.to_string()),
+        port,
+        ref_wav: config.named("voice_ref").map(PathBuf::from),
+        ref_text: config.named("voice_text"),
+    })
+}
+
+pub fn setup(tts: u16, names: impl Fn(&Config) -> [String; 3]) -> Result<()> {
     if !bundled() {
         return Ok(());
     }
     let fresh = voice::fresh();
-    std::thread::spawn(|| {
-        if let Err(e) = voice::prepare() {
+    let first = !Config::load()?.flag("setup");
+    std::thread::spawn(move || {
+        let made = match first {
+            true => voiced(tts).and_then(|cfg| voice::preview(&cfg, &cfg.design)).map(drop),
+            false => voice::prepare(),
+        };
+        if let Err(e) = made {
             log::warn!("{e:#}");
         }
     });
@@ -133,7 +148,7 @@ fn state() -> Result<Value> {
     }))
 }
 
-fn answer(message: &Value, port: u16) -> Result<()> {
+fn answer(message: &Value, port: u16, tts: u16) -> Result<()> {
     let id = message["provider"].as_str().unwrap_or_default();
     match message["type"].as_str() {
         Some("settings") => notch::post(state()?),
@@ -158,6 +173,20 @@ fn answer(message: &Value, port: u16) -> Result<()> {
             if changed && READY.load(Relaxed) {
                 restart();
             }
+        }
+        Some("preview") => {
+            let design = message["design"].as_str().unwrap_or_default().to_string();
+            std::thread::spawn(move || {
+                let made = voiced(tts).and_then(|cfg| voice::preview(&cfg, &design));
+                let path = match &made {
+                    Ok(path) => Some(path.display().to_string()),
+                    Err(e) => {
+                        log::warn!("{e:#}");
+                        None
+                    }
+                };
+                notch::post(json!({ "type": "preview", "design": design, "path": path }));
+            });
         }
         Some("ready") => READY.store(true, Relaxed),
         Some("restart") => match QUIT.lock().unwrap().is_some() {
@@ -186,11 +215,11 @@ async fn update() -> Option<Value> {
     Some(json!({ "type": "update", "version": version, "url": dmg.or(latest["html_url"].as_str())? }))
 }
 
-pub fn serve(port: u16) {
+pub fn serve(port: u16, tts: u16) {
     let asked = notch::requests();
     std::thread::spawn(move || {
         for message in asked {
-            if let Err(e) = answer(&message, port) {
+            if let Err(e) = answer(&message, port, tts) {
                 log::warn!("{e:#}");
             }
         }

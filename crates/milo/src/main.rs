@@ -315,7 +315,7 @@ fn main() -> Result<()> {
     if args.no_notch {
         return run(args);
     }
-    app::serve(args.port);
+    app::serve(args.port, args.tts_port);
     notch::run(move || {
         let code = match run(args) {
             Ok(()) => {
@@ -357,7 +357,7 @@ fn solo(args: Args, task: &str) -> Result<()> {
 
 fn run(args: Args) -> Result<()> {
     if notch::on() {
-        app::setup(|config| names(&args, config))?;
+        app::setup(args.tts_port, |config| names(&args, config))?;
     }
     let args = settled(args)?;
     tools::unasked(args.dangerously_auto_approve);
@@ -461,14 +461,10 @@ fn run(args: Args) -> Result<()> {
     });
 
     let busy = Arc::new(AtomicBool::new(false));
-    let hands = tools.as_ref().is_some_and(|tools| tools.hands());
 
     if notch::on() {
         let _rt = rt.enter();
         tokio::spawn(status(talking.clone(), busy.clone()));
-        if hands {
-            tokio::spawn(computer::warm());
-        }
         if args.push_to_talk {
             notch::mute(true);
         }

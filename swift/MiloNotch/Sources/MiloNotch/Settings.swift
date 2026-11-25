@@ -39,6 +39,7 @@ struct Ask: Encodable {
     let type: String
     var provider: String?
     var key: String?
+    var design: String?
 }
 
 struct Save: Encodable {
@@ -62,6 +63,8 @@ final class Desk: ObservableObject {
     @Published var detail = ""
     @Published var voice = ""
     @Published var fresh = false
+    @Published var previewing: String?
+    var sound: NSSound?
     @Published var state = "starting"
     var ask: (Ask) -> Void = { _ in }
     var save: (Prefs) -> Void = { _ in }
@@ -78,6 +81,25 @@ final class Desk: ObservableObject {
         case "failed": detail
         default: nil
         }
+    }
+
+    func preview(_ design: String) {
+        sound?.stop()
+        previewing = design
+        ask(Ask(type: "preview", design: design))
+    }
+
+    func heard(_ design: String?, _ path: String?) {
+        guard design == previewing else { return }
+        previewing = nil
+        guard let path else { return }
+        sound = NSSound(contentsOfFile: path, byReference: true)
+        sound?.play()
+    }
+
+    func hush() {
+        previewing = nil
+        sound?.stop()
     }
 
     func enter(_ provider: String, _ key: String) {

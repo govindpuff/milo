@@ -82,6 +82,8 @@ struct Message: Decodable {
     let voice: String?
     let version: String?
     let first: Bool?
+    let design: String?
+    let path: String?
     let fresh: Bool?
     let url: String?
 }
@@ -405,6 +407,7 @@ final class Controller {
     let desk = Desk()
     let windows = Windows()
     let grants = Grants()
+    let staged = Bundle.main.bundlePath.hasSuffix(".app") && isatty(STDERR_FILENO) == 0
     let wave = Wave()
     let panel: NSPanel
     var screen = NSRect.zero
@@ -444,7 +447,11 @@ final class Controller {
             MainActor.assumeIsolated { self?.place() }
         }
         place()
-        panel.orderFrontRegardless()
+        if staged {
+            menu.item.isVisible = false
+        } else {
+            panel.orderFrontRegardless()
+        }
         let timer = Timer(timeInterval: Size.tick, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -567,12 +574,21 @@ final class Controller {
         if first { steps += [.voice, .options] }
         guard !steps.isEmpty else {
             send(Ask(type: "ready"))
+            reveal()
             return
         }
         steps.append(.finish)
+        NSApp.setActivationPolicy(.regular)
         windows.wizard(Wizard(desk: desk, grants: grants, steps: steps, first: first) { [weak self] in
             self?.windows.close("Milo")
+            self?.reveal()
         })
+    }
+
+    func reveal() {
+        NSApp.setActivationPolicy(.accessory)
+        menu.item.isVisible = true
+        panel.orderFrontRegardless()
     }
 
     func send(_ value: some Encodable) {
@@ -610,6 +626,8 @@ final class Controller {
             desk.fresh = message.fresh ?? false
             desk.state = "starting"
             setup(first: message.first ?? false, keyed: message.provider == nil)
+        case "preview":
+            desk.heard(message.design, message.path)
         case "update":
             if let version = message.version, let url = message.url { menu.offer(version, url) }
         case "card":

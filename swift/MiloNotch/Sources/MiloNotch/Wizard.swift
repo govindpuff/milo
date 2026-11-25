@@ -260,8 +260,15 @@ struct Wizard: View {
         )
     }
 
+    func design(_ sound: Sound) -> String {
+        sound.design.isEmpty ? desk.voice : sound.design
+    }
+
+    var described: String { custom.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     func advance() {
         guard ready else { return }
+        desk.hush()
         if step == .finish {
             close()
             return
@@ -273,8 +280,7 @@ struct Wizard: View {
     func commit() {
         if first {
             var prefs = desk.draft
-            let own = custom.trimmingCharacters(in: .whitespacesAndNewlines)
-            prefs.voiceDesign = own.isEmpty ? sounds.first { $0.id == picked }?.design ?? "" : own
+            prefs.voiceDesign = described.isEmpty ? sounds.first { $0.id == picked }?.design ?? "" : described
             prefs.setup = true
             desk.save(prefs)
         }
@@ -371,18 +377,28 @@ struct Wizard: View {
 
     @ViewBuilder var voice: some View {
         VStack(spacing: 22) {
-            Heading(title: "Choose a voice", detail: "Pick how Milo sounds, or describe a voice of your own. You can change it later.")
+            Heading(title: "Choose a voice", detail: "Click a voice to hear it, or describe one of your own. A new voice takes a few seconds to make.")
             VStack(spacing: 10) {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
                     ForEach(sounds) { sound in
+                        let chosen = custom.isEmpty && picked == sound.id
                         Button {
                             picked = sound.id
                             custom = ""
+                            desk.preview(design(sound))
                         } label: {
-                            Tile(selected: custom.isEmpty && picked == sound.id) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(sound.id).font(.system(size: 14, weight: .semibold)).foregroundStyle(Look.ink)
-                                    Text(sound.line).font(.system(size: 12)).foregroundStyle(Look.faint)
+                            Tile(selected: chosen) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(sound.id).font(.system(size: 14, weight: .semibold)).foregroundStyle(Look.ink)
+                                        Text(sound.line).font(.system(size: 12)).foregroundStyle(Look.faint)
+                                    }
+                                    Spacer()
+                                    if chosen, desk.previewing == design(sound) {
+                                        ProgressView().controlSize(.small)
+                                    } else if chosen {
+                                        Image(systemName: "speaker.wave.2.fill").foregroundStyle(Look.faint)
+                                    }
                                 }
                             }
                         }
@@ -396,6 +412,18 @@ struct Wizard: View {
                             .textFieldStyle(.plain)
                             .font(.system(size: 14))
                             .lineLimit(1...3)
+                            .onSubmit { if !described.isEmpty { desk.preview(described) } }
+                        if !described.isEmpty, desk.previewing == described {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button {
+                                desk.preview(described)
+                            } label: {
+                                Image(systemName: "play.fill")
+                            }
+                            .buttonStyle(Press())
+                            .disabled(described.isEmpty)
+                        }
                     }
                 }
             }
@@ -404,8 +432,10 @@ struct Wizard: View {
             let design = desk.draft.voiceDesign
             if let known = sounds.first(where: { $0.design == design }) {
                 picked = known.id
+                desk.preview(self.design(known))
             } else {
                 custom = design
+                desk.preview(design)
             }
         }
     }
@@ -482,7 +512,11 @@ struct Wizard: View {
                 }
                 Spacer()
                 if at > 0, step != .finish {
-                    Button("Back") { withAnimation(.easeInOut(duration: 0.25)) { at -= 1 } }.buttonStyle(Press())
+                    Button("Back") {
+                        desk.hush()
+                        withAnimation(.easeInOut(duration: 0.25)) { at -= 1 }
+                    }
+                    .buttonStyle(Press())
                 }
                 Button(action: advance) {
                     HStack(spacing: 8) {

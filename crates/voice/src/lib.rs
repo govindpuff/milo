@@ -91,74 +91,132 @@ fn tail(path: &Path, lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
+fn named(cfg: &VoiceConfig) -> String {
+    match (&cfg.ref_wav, &cfg.ref_text) {
+        (Some(wav), Some(text)) => format!("{}|{text}", wav.display()),
+        _ => cfg.design.clone(),
+    }
+}
+
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(500)).build()
+}
+
+fn spawn(cfg: &VoiceConfig) -> Result<(Child, PathBuf)> {
+    let root = root()?;
+    let python = root.join("venv/bin/python");
+    install(&root).context("the voice could not be installed")?;
+    let reference = match (&cfg.ref_wav, &cfg.ref_text) {
+        (Some(wav), Some(text)) => Some((wav, text)),
+        (None, None) => None,
+        _ => bail!("a reference voice needs both the clip and its exact transcript"),
+    };
+    if let Some((wav, _)) = &reference
+        && !wav.is_file()
+    {
+        bail!("reference voice clip {} not found", wav.display());
+    }
+    let script = root.join("voice_server.py");
+    std::fs::write(&script, SCRIPT).with_context(|| format!("write {}", script.display()))?;
+    let log_path = std::env::temp_dir().join(format!("milo-voice-{}.log", cfg.port));
+    let log = File::create(&log_path).with_context(|| format!("create {}", log_path.display()))?;
+    let mut cmd = Command::new(&python);
+    cmd.arg(&script)
+        .args(["--port", &cfg.port.to_string()])
+        .args(["--ppid", &std::process::id().to_string()])
+        .arg("--voices-dir")
+        .arg(root.join("voices"))
+        .args(["--design", &cfg.design]);
+    if let Some((wav, text)) = reference {
+        cmd.arg("--ref-wav").arg(wav).arg("--ref-text").arg(text);
+    }
+    cmd.env("PYTHONUNBUFFERED", "1").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log).process_group(0);
+    log::info!("starting the {ENGINE} voice on port {}, log {}", cfg.port, log_path.display());
+    let child = cmd.spawn().with_context(|| format!("spawn {}", python.display()))?;
+    Ok((child, log_path))
+}
+
+fn stop(mut child: Child) {
+    let pgid = child.id() as libc::pid_t;
+    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    let _ = child.wait();
+}
+
+fn serving(cfg: &VoiceConfig, held: &mut Option<Child>) -> Result<serde_json::Value> {
+    let agent = agent();
+    let health = format!("http://127.0.0.1:{}/health", cfg.port);
+    if let Ok(response) = agent.get(&health).call() {
+        return Ok(response.into_json().unwrap_or_default());
+    }
+    let (child, log_path) = spawn(cfg)?;
+    let child = held.insert(child);
+    let start = Instant::now();
+    let mut noted = start;
+    loop {
+        if let Ok(response) = agent.get(&health).call() {
+            log::info!("voice ready after {:.1}s", start.elapsed().as_secs_f32());
+            return Ok(response.into_json().unwrap_or_default());
+        }
+        let ended = child.try_wait()?;
+        let late = start.elapsed() > START_TIMEOUT;
+        if ended.is_some() || late {
+            if let Some(child) = held.take() {
+                stop(child);
+            }
+            match ended {
+                Some(status) => {
+                    bail!("the {ENGINE} voice exited ({status}) before becoming ready:\n{}", tail(&log_path, 30))
+                }
+                None => bail!("the {ENGINE} voice was not ready after {}s", START_TIMEOUT.as_secs()),
+            }
+        }
+        if noted.elapsed() > Duration::from_secs(15) {
+            let last = tail(&log_path, 1);
+            log::info!("waiting for the voice ({:.0}s) {last}", start.elapsed().as_secs_f32());
+            noted = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+static HELD: std::sync::Mutex<Option<Child>> = std::sync::Mutex::new(None);
+
+pub fn preview(cfg: &VoiceConfig, design: &str) -> Result<PathBuf> {
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    serving(cfg, &mut held)?;
+    let made = agent()
+        .post(&format!("http://127.0.0.1:{}/design", cfg.port))
+        .send_json(serde_json::json!({ "design": design }))
+        .map_err(|e| anyhow!("the voice could not be designed: {e}"))?;
+    let made: serde_json::Value = made.into_json().unwrap_or_default();
+    made["path"].as_str().map(PathBuf::from).ok_or_else(|| anyhow!("the voice could not be designed"))
+}
+
 impl Voice {
     pub fn start(cfg: &VoiceConfig) -> Result<Voice> {
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_millis(500)).build();
+        let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        let state = serving(cfg, &mut held)?;
         let base = format!("http://127.0.0.1:{}", cfg.port);
-        let health = format!("{base}/health");
-        let url = format!("{base}/speak");
-        if let Ok(response) = agent.get(&health).call() {
-            let body: serde_json::Value = response.into_json().unwrap_or_default();
-            if body["engine"].as_str() != Some(ENGINE) {
-                bail!("port {} is already serving a different voice; stop it or pass another --tts-port", cfg.port);
-            }
-            return Ok(Voice { agent, url, child: None });
+        if state["engine"].as_str() != Some(ENGINE) {
+            bail!("port {} is already serving a different voice; stop it or pass another --tts-port", cfg.port);
         }
-
-        let root = root()?;
-        let python = root.join("venv/bin/python");
-        install(&root).context("the voice could not be installed")?;
-        let reference = match (&cfg.ref_wav, &cfg.ref_text) {
-            (Some(wav), Some(text)) => Some((wav, text)),
-            (None, None) => None,
-            _ => bail!("a reference voice needs both the clip and its exact transcript"),
-        };
-        if let Some((wav, _)) = &reference
-            && !wav.is_file()
-        {
-            bail!("reference voice clip {} not found", wav.display());
+        let agent = agent();
+        if state["voice"].as_str() != Some(named(cfg).as_str()) {
+            let wav = cfg.ref_wav.as_ref().map(|wav| wav.display().to_string());
+            agent
+                .post(&format!("{base}/voice"))
+                .send_json(serde_json::json!({ "design": cfg.design, "ref_wav": wav, "ref_text": cfg.ref_text }))
+                .map_err(|e| anyhow!("the voice on port {} could not be changed: {e}", cfg.port))?;
         }
-        let script = root.join("voice_server.py");
-        std::fs::write(&script, SCRIPT).with_context(|| format!("write {}", script.display()))?;
-        let log_path = std::env::temp_dir().join(format!("milo-voice-{}.log", cfg.port));
-        let log = File::create(&log_path).with_context(|| format!("create {}", log_path.display()))?;
-        let mut cmd = Command::new(&python);
-        cmd.arg(&script)
-            .args(["--port", &cfg.port.to_string()])
-            .args(["--ppid", &std::process::id().to_string()])
-            .arg("--voices-dir")
-            .arg(root.join("voices"))
-            .args(["--design", &cfg.design]);
-        if let Some((wav, text)) = reference {
-            cmd.arg("--ref-wav").arg(wav).arg("--ref-text").arg(text);
-        }
-        cmd.env("PYTHONUNBUFFERED", "1").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log).process_group(0);
-        log::info!("starting the {ENGINE} voice on port {}, log {}", cfg.port, log_path.display());
-        let child = cmd.spawn().with_context(|| format!("spawn {}", python.display()))?;
-        let mut voice = Voice { agent, url, child: Some(child) };
-
-        let start = Instant::now();
-        let mut noted = start;
-        loop {
-            if voice.agent.get(&health).call().is_ok() {
-                log::info!("voice ready after {:.1}s", start.elapsed().as_secs_f32());
-                return Ok(voice);
-            }
-            if let Some(child) = voice.child.as_mut()
-                && let Some(status) = child.try_wait()?
-            {
-                bail!("the {ENGINE} voice exited ({status}) before becoming ready:\n{}", tail(&log_path, 30));
-            }
-            if start.elapsed() > START_TIMEOUT {
-                bail!("the {ENGINE} voice was not ready after {}s", START_TIMEOUT.as_secs());
-            }
-            if noted.elapsed() > Duration::from_secs(15) {
-                let last = tail(&log_path, 1);
-                log::info!("waiting for the voice ({:.0}s) {last}", start.elapsed().as_secs_f32());
-                noted = Instant::now();
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
+        Ok(Voice { agent, url: format!("{base}/speak"), child: held.take() })
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -229,17 +287,8 @@ impl Voice {
 
 impl Drop for Voice {
     fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else { return };
-        let pgid = child.id() as libc::pid_t;
-        unsafe { libc::kill(-pgid, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if !matches!(child.try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        if let Some(child) = self.child.take() {
+            stop(child);
         }
-        unsafe { libc::kill(-pgid, libc::SIGKILL) };
-        let _ = child.wait();
     }
 }
