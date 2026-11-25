@@ -151,6 +151,10 @@ fn answer(message: &Value, port: u16) -> Result<()> {
                 restart();
             }
         }
+        Some("restart") => match QUIT.lock().unwrap().is_some() {
+            true => restart(),
+            false => again(),
+        },
         Some("quit") => match QUIT.lock().unwrap().as_ref().filter(|_| !STOPPED.load(Relaxed)) {
             Some(quit) => drop(quit.send(Event::Quit)),
             None => std::process::exit(0),

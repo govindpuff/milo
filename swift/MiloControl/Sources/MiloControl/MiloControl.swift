@@ -533,10 +533,9 @@ func visit(_ node: AXUIElement, _ depth: Int, _ quiet: Bool, _ above: String, _ 
 
 func capture(_ id: CGWindowID, _ size: CGSize, _ longest: CGFloat = Limit.captured) throws -> CGImage {
     guard CGPreflightScreenCaptureAccess() else {
-        CGRequestScreenCaptureAccess()
         throw Failure(
             text:
-                "Screen Recording is turned off for the terminal app, so the screen cannot be seen. They need to turn it on in System Settings, under Privacy and Security, Screen Recording, and then start milo again"
+                "Screen Recording is turned off for Milo, so the screen cannot be seen. They need to turn it on in Milo's settings, under Permissions, and then start Milo again"
         )
     }
     let scale = min(2, longest / max(size.width, size.height, 1))
@@ -1190,11 +1189,10 @@ let display = CGMainDisplayID()
 
 func handle(_ request: [String: Any]) throws -> [String: Any] {
     _ = display
-    let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-    guard AXIsProcessTrustedWithOptions(prompt) else {
+    guard AXIsProcessTrusted() else {
         throw Failure(
             text:
-                "Accessibility is turned off for the terminal app, so nothing on the screen can be used. They need to turn it on in System Settings, under Privacy and Security, Accessibility, and then start milo again"
+                "Accessibility is turned off for Milo, so nothing on the screen can be used. They need to turn it on in Milo's settings, under Permissions, and then start Milo again"
         )
     }
     switch request["op"] as? String {

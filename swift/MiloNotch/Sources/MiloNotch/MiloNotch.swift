@@ -402,6 +402,7 @@ final class Controller {
     let menu = Menu()
     let desk = Desk()
     let windows = Windows()
+    let grants = Grants()
     let wave = Wave()
     let panel: NSPanel
     var screen = NSRect.zero
@@ -447,6 +448,7 @@ final class Controller {
         }
         RunLoop.main.add(timer, forMode: .common)
         keys()
+        if Bundle.main.bundlePath.hasSuffix(".app"), !grants.all { setup() }
     }
 
     func place() {
@@ -553,7 +555,13 @@ final class Controller {
     }
 
     func settings() {
-        windows.show("Milo Settings", SettingsView(desk: desk))
+        windows.show("Milo Settings", SettingsView(desk: desk, grants: grants))
+    }
+
+    func setup() {
+        windows.show("Milo", closes: false, SetupView(desk: desk, grants: grants) { [weak self] in
+            self?.windows.close("Milo")
+        })
     }
 
     func send(_ value: some Encodable) {
@@ -590,7 +598,8 @@ final class Controller {
             if let provider = message.provider { desk.models[provider] = message.models ?? [] }
         case "setup":
             desk.wanted = message.provider
-            windows.show("Milo", SetupView(desk: desk) { [weak self] in self?.windows.close("Milo") })
+            desk.fresh = true
+            setup()
         case "update":
             if let version = message.version, let url = message.url { menu.offer(version, url) }
         case "card":

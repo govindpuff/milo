@@ -60,6 +60,7 @@ final class Desk: ObservableObject {
     @Published var detail = ""
     @Published var voice = ""
     @Published var wanted: String?
+    @Published var fresh = false
     @Published var state = "starting"
     var ask: (Ask) -> Void = { _ in }
     var save: (Prefs) -> Void = { _ in }
@@ -142,29 +143,54 @@ enum Access: CaseIterable, Identifiable {
     }
 }
 
-struct Permissions: View {
-    @State var granted: [Access: Bool] = [:]
-    let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+@MainActor
+final class Grants: ObservableObject {
+    @Published var granted: [Access: Bool] = [:]
+    @Published var asked: Set<Access> = []
+    var clock: Timer?
+
+    init() {
+        refresh()
+        let clock = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        RunLoop.main.add(clock, forMode: .common)
+        self.clock = clock
+    }
+
+    var all: Bool { Access.allCases.allSatisfy { granted[$0] == true } }
 
     func refresh() {
-        granted = Dictionary(uniqueKeysWithValues: Access.allCases.map { ($0, $0.granted) })
+        let now = Dictionary(uniqueKeysWithValues: Access.allCases.map { ($0, $0.granted) })
+        if now != granted { granted = now }
     }
+
+    func request(_ access: Access) {
+        asked.insert(access)
+        access.request()
+    }
+}
+
+struct Permissions: View {
+    @ObservedObject var grants: Grants
+    let restart: () -> Void
 
     var body: some View {
         ForEach(Access.allCases) { access in
+            let waits = access == .screen && grants.asked.contains(access)
             LabeledContent {
-                if granted[access] == true {
+                if grants.granted[access] == true {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                } else if waits {
+                    Button("Restart Milo", action: restart)
                 } else {
-                    Button("Allow") { access.request() }
+                    Button("Allow") { grants.request(access) }
                 }
             } label: {
                 Text(access.title)
-                Text(access.why)
+                Text(waits ? "Turn it on in System Settings, and then restart Milo." : access.why)
             }
         }
-        .onAppear(perform: refresh)
-        .onReceive(clock) { _ in refresh() }
     }
 }
 
@@ -190,6 +216,7 @@ struct Login: View {
 
 struct SettingsView: View {
     @ObservedObject var desk: Desk
+    @ObservedObject var grants: Grants
     @State var key = ""
 
     var id: String { desk.draft.provider }
@@ -321,7 +348,7 @@ struct SettingsView: View {
 
     @ViewBuilder var access: some View {
         Section("Permissions") {
-            Permissions()
+            Permissions(grants: grants) { desk.ask(Ask(type: "restart")) }
         }
     }
 
@@ -370,6 +397,7 @@ struct SettingsView: View {
 
 struct SetupView: View {
     @ObservedObject var desk: Desk
+    @ObservedObject var grants: Grants
     @State var key = ""
     let close: () -> Void
 
@@ -382,7 +410,7 @@ struct SetupView: View {
                 Text("Welcome to Milo").font(.title2.bold())
                 Text(
                     desk.wanted.map { "Paste your \(named($0)) API key to get started." }
-                        ?? "Allow what Milo needs, and you're set."
+                        ?? "Milo needs these to hear you and to use your apps."
                 )
                 .foregroundStyle(.secondary)
             }
@@ -398,7 +426,7 @@ struct SetupView: View {
                     }
                 } else {
                     Section {
-                        Permissions()
+                        Permissions(grants: grants) { desk.ask(Ask(type: "restart")) }
                     }
                     Section {
                         LabeledContent {
@@ -415,7 +443,11 @@ struct SetupView: View {
                         if desk.state == "starting" {
                             HStack(spacing: 10) {
                                 ProgressView().controlSize(.small)
-                                Text("Downloading the voice and speech models. This can take several minutes.")
+                                Text(
+                                    desk.fresh
+                                        ? "Downloading the voice and speech models. This can take several minutes."
+                                        : "Milo is starting."
+                                )
                             }
                         } else {
                             Label("Milo is ready. Start talking.", systemImage: "checkmark.circle.fill")
@@ -432,7 +464,9 @@ struct SetupView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(key.isEmpty || desk.keys[provider] == "checking")
                 } else {
-                    Button("Done", action: close).keyboardShortcut(.defaultAction)
+                    Button("Done", action: close)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!grants.all)
                 }
             }
             .padding(12)
@@ -445,9 +479,10 @@ struct SetupView: View {
 final class Windows {
     var open: [String: NSWindow] = [:]
 
-    func show(_ title: String, _ view: some View) {
+    func show(_ title: String, closes: Bool = true, _ view: some View) {
         if open[title] == nil {
-            let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let style: NSWindow.StyleMask = closes ? [.titled, .closable] : [.titled]
+            let window = NSWindow(contentRect: .zero, styleMask: style, backing: .buffered, defer: false)
             let host = NSHostingController(rootView: view)
             host.sizingOptions = .preferredContentSize
             window.title = title
