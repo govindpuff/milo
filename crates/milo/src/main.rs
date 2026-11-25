@@ -8,6 +8,9 @@ mod skills;
 mod tools;
 mod tts;
 
+use std::fs::File;
+use std::io::IsTerminal;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -273,7 +276,31 @@ fn joined<T>(handle: ScopedJoinHandle<'_, Result<T>>, what: &str) -> Result<T> {
     handle.join().map_err(|_| anyhow!("{what} panicked"))?.with_context(|| format!("{what} failed"))
 }
 
+fn bundled() -> bool {
+    std::env::current_exe().is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"))
+        && !std::io::stderr().is_terminal()
+}
+
+fn settle() -> Result<()> {
+    let home = PathBuf::from(std::env::var("HOME").context("HOME is not set")?);
+    let logs = home.join("Library/Logs/Milo");
+    std::fs::create_dir_all(&logs).with_context(|| format!("create {}", logs.display()))?;
+    let log = File::create(logs.join("milo.log")).context("create the log file")?;
+    unsafe {
+        libc::dup2(log.as_raw_fd(), libc::STDOUT_FILENO);
+        libc::dup2(log.as_raw_fd(), libc::STDERR_FILENO);
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let local = home.join(".local/bin");
+    unsafe { std::env::set_var("PATH", format!("/opt/homebrew/bin:/usr/local/bin:{}:{path}", local.display())) };
+    Ok(())
+}
+
 fn main() -> Result<()> {
+    let app = bundled();
+    if app {
+        settle()?;
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
     if args.list_devices {
@@ -301,6 +328,9 @@ fn main() -> Result<()> {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("Error: {e:?}");
+                if app {
+                    notch::fail(&format!("{e:#}"));
+                }
                 1
             }
         };

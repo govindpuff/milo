@@ -291,9 +291,77 @@ final class Host: NSHostingView<NotchView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+enum Mark {
+    static let side: CGFloat = 18
+    static let leg: CGFloat = 3.6
+    static let legs: [CGFloat] = [2.9, 9, 15.1]
+    static let foot: CGFloat = 4.4
+    static let shoulder: CGFloat = 9.1
+
+    static var image: NSImage {
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+            let path = NSBezierPath()
+            path.lineWidth = leg
+            path.lineJoinStyle = .round
+            for (left, right) in zip(legs, legs.dropFirst()) {
+                path.move(to: NSPoint(x: left, y: foot))
+                path.line(to: NSPoint(x: left, y: shoulder))
+                path.appendArc(
+                    withCenter: NSPoint(x: (left + right) / 2, y: shoulder),
+                    radius: (right - left) / 2,
+                    startAngle: 180,
+                    endAngle: 0,
+                    clockwise: true
+                )
+                path.line(to: NSPoint(x: right, y: foot))
+            }
+            NSColor.black.setStroke()
+            path.stroke()
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+}
+
+@MainActor
+final class Menu: NSObject, NSMenuDelegate {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    let mute = NSMenuItem(title: "Mute Microphone", action: #selector(toggle), keyEquivalent: "")
+    var muted: () -> Bool = { false }
+    var flip: () -> Void = {}
+
+    override init() {
+        super.init()
+        item.button?.image = Mark.image
+        let menu = NSMenu()
+        menu.delegate = self
+        mute.target = self
+        menu.addItem(mute)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit Milo", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        item.menu = menu
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        mute.state = muted() ? .on : .off
+    }
+
+    @objc func toggle() {
+        flip()
+    }
+
+    @objc func quit() {
+        kill(getpid(), SIGINT)
+    }
+}
+
 @MainActor
 final class Controller {
     let model = Model()
+    let menu = Menu()
     let wave = Wave()
     let panel: NSPanel
     var screen = NSRect.zero
@@ -319,6 +387,8 @@ final class Controller {
         panel.contentView = host
         model.choose = { [weak self] id, action in self?.choose(id, action) }
         model.toggle = { [weak self] in self?.toggle() }
+        menu.muted = { [weak self] in self?.model.muted ?? false }
+        menu.flip = { [weak self] in self?.toggle() }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -477,6 +547,23 @@ public func run(callback: @convention(c) (UnsafePointer<CChar>) -> Void) {
         app.setActivationPolicy(.accessory)
         controller = Controller()
         app.run()
+    }
+}
+
+@_cdecl("milo_notch_fail")
+public func fail(message: UnsafePointer<CChar>) {
+    let text = String(cString: message)
+    DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Milo stopped"
+            alert.informativeText = text
+            alert.addButton(withTitle: "Quit")
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            alert.runModal()
+            exit(1)
+        }
     }
 }
 

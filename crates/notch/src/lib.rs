@@ -14,6 +14,7 @@ const DECLINE: &str = "decline";
 unsafe extern "C" {
     fn milo_notch_run(reply: extern "C" fn(*const c_char));
     fn milo_notch_post(message: *const c_char);
+    fn milo_notch_fail(message: *const c_char);
     fn milo_notch_level(source: i32, value: f32);
 }
 
@@ -64,6 +65,13 @@ pub fn run(work: impl FnOnce() + Send + 'static) {
     ON.store(true, Relaxed);
     std::thread::spawn(work);
     unsafe { milo_notch_run(reply) };
+}
+
+pub fn fail(text: &str) {
+    if let Ok(text) = CString::new(text.replace('\0', " ")) {
+        unsafe { milo_notch_fail(text.as_ptr()) };
+    }
+    std::thread::park();
 }
 
 pub fn on() -> bool {
