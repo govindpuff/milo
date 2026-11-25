@@ -113,6 +113,7 @@ const RATES: &[Rate] = &[
     rate("gpt-6.1-sol-healthcare", 2.0, 0.1, 10.0, 2.0),
 ];
 
+const OTHER: &[&str] = &["embedding", "image", "tts", "audio", "live", "robotics", "computer-use"];
 const REFUSED: &[&str] = &["answered 401", "answered 403"];
 const ULTRAFAST: f64 = 6.0;
 const PROMOTED: f64 = 3.0;
@@ -373,7 +374,33 @@ pub fn update(new: &Map<String, Value>) -> Result<bool> {
 pub fn offered(id: &str, port: u16) -> Result<Vec<String>> {
     let chosen = Config::load()?.chosen(&format!("{id}/any"), port)?;
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    rt.block_on(chosen.llm.models())
+    let mut names: Vec<String> = rt
+        .block_on(chosen.llm.models())?
+        .iter()
+        .filter_map(|model| Some((model, model["id"].as_str().or_else(|| model["name"].as_str())?)))
+        .filter(|(model, name)| talks(id, name, model))
+        .map(|(_, name)| name.to_string())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn talks(id: &str, name: &str, model: &Value) -> bool {
+    let has = |list: &Value, item: &str| list.as_array().is_some_and(|list| list.iter().any(|have| have == item));
+    match id {
+        "openai" => RATES.iter().any(|rate| rate.model == name),
+        "google" => {
+            let name = name.strip_prefix("models/").unwrap_or(name);
+            name.starts_with("gemini") && !OTHER.iter().any(|kind| name.contains(kind))
+        }
+        "openrouter" => {
+            let made = &model["architecture"]["output_modalities"];
+            has(made, "text")
+                && made.as_array().is_some_and(|made| made.len() == 1)
+                && has(&model["supported_parameters"], "tools")
+        }
+        _ => true,
+    }
 }
 
 fn typed(ask: &str) -> Result<String> {

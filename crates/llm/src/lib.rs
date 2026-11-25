@@ -403,7 +403,7 @@ impl Llm {
         Ok(())
     }
 
-    pub async fn models(&self) -> Result<Vec<String>> {
+    pub async fn models(&self) -> Result<Vec<Value>> {
         let req = self.send(self.inner.http.get(format!("{}/models", self.inner.base))).timeout(LIST_TIMEOUT);
         let resp = req.send().await.with_context(|| format!("request to {}", self.inner.base))?;
         let status = resp.status();
@@ -413,14 +413,7 @@ impl Llm {
         }
         let body: Value = serde_json::from_str(&body).context("list of models")?;
         let list = body["data"].as_array().or_else(|| body["models"].as_array());
-        let mut names: Vec<String> = list
-            .into_iter()
-            .flatten()
-            .filter_map(|model| model["id"].as_str().or_else(|| model["name"].as_str()))
-            .map(str::to_string)
-            .collect();
-        names.sort();
-        Ok(names)
+        Ok(list.cloned().unwrap_or_default())
     }
 
     pub async fn warm(&self, messages: &[Message], tools: Option<&Value>) -> Result<()> {
