@@ -41,8 +41,6 @@ const HISTORY_KEEP: usize = 30;
 const GHOST_CHARS: usize = 72;
 const SHORT_WORDS: usize = 3;
 const SHORT_PATIENCE: Duration = Duration::from_millis(600);
-const MAX_NUDGES: u32 = 2;
-const SILENCE: &str = "(silence)";
 const RESULT: &str = "(result)";
 const WAITING: &str = "not done yet, waiting for them to approve on their screen:";
 const WORKING: &str =
@@ -114,7 +112,6 @@ pub enum Event {
 }
 
 pub struct Settings {
-    pub nudge: Duration,
     pub bank: Arc<Bank>,
     pub backchannel: bool,
     pub yielding: bool,
@@ -162,7 +159,6 @@ struct Turn {
     mood: Option<String>,
     opener: Option<usize>,
     opener_played: bool,
-    nudge: bool,
     aside: bool,
     calls: Vec<Call>,
     owed: Vec<String>,
@@ -216,8 +212,6 @@ pub struct Controller {
     voice_start: Option<Instant>,
     carry: Option<String>,
     stream_words: Vec<String>,
-    idle_since: Option<Instant>,
-    nudges: u32,
     gaps: (u64, u64),
     asides: VecDeque<String>,
     next_id: u64,
@@ -264,8 +258,6 @@ impl Controller {
             voice_start: None,
             carry: None,
             stream_words: Vec::new(),
-            idle_since: None,
-            nudges: 0,
             gaps: (0, 0),
             asides: VecDeque::new(),
             next_id: 0,
@@ -300,7 +292,7 @@ impl Controller {
             None => match &self.heard {
                 Some(h) if !h.words.is_empty() => h.at + SPECULATE,
                 _ if !self.asides.is_empty() => Instant::now() + POLL,
-                _ => self.nudge_at().unwrap_or_else(|| Instant::now() + IDLE),
+                _ => Instant::now() + IDLE,
             },
         }
     }
@@ -321,16 +313,8 @@ impl Controller {
         self.maybe_yield(now);
         self.maybe_react(now);
         self.maybe_aside();
-        self.maybe_nudge(now);
         self.poll_onset();
         self.check_end();
-    }
-
-    fn nudge_at(&self) -> Option<Instant> {
-        if self.settings.nudge.is_zero() || self.nudges >= MAX_NUDGES {
-            return None;
-        }
-        Some(self.idle_since? + self.settings.nudge * (1 + 2 * self.nudges))
     }
 
     fn quiet(&self) -> bool {
@@ -342,7 +326,6 @@ impl Controller {
             return;
         }
         let text: Vec<String> = self.asides.drain(..).map(|a| format!("{RESULT} {a}")).collect();
-        self.idle_since = None;
         if let Some(c) = self.carry.take() {
             remember(&mut self.history, Message::user(format!("[{}] {c}", local_time())));
         }
@@ -431,26 +414,6 @@ impl Controller {
         self.asides.push_back(STOPPED.to_string());
     }
 
-    fn maybe_nudge(&mut self, now: Instant) {
-        if computer::running() || !self.asides.is_empty() {
-            self.idle_since = self.idle_since.map(|_| now);
-        }
-        let quiet = self.quiet() && self.asides.is_empty() && !self.settings.busy.load(Relaxed) && !computer::running();
-        if !quiet || self.nudge_at().is_none_or(|at| now < at) {
-            return;
-        }
-        self.nudges += 1;
-        self.idle_since = None;
-        if let Some(c) = self.carry.take() {
-            remember(&mut self.history, Message::user(format!("[{}] {c}", local_time())));
-        }
-        self.start(SILENCE.to_string(), Vec::new(), None, None);
-        if let Some(t) = self.turn.as_mut() {
-            t.nudge = true;
-        }
-        self.commit("nudge".into());
-    }
-
     fn verdict(&self) -> Option<&Verdict> {
         let v = self.verdict.as_ref()?;
         let h = self.heard.as_ref()?;
@@ -494,7 +457,7 @@ impl Controller {
     fn barge(&mut self) {
         self.poll_onset();
         let Some(t) = self.turn.as_ref() else { return };
-        if t.nudge || t.aside || t.rounds > 0 || !early(t, Instant::now()) {
+        if t.aside || t.rounds > 0 || !early(t, Instant::now()) {
             self.interrupt();
             return;
         }
@@ -633,7 +596,6 @@ impl Controller {
         match ev {
             TurnEvent::Start { seq } => {
                 self.settings.listening.store(true, Relaxed);
-                self.idle_since = self.idle_since.map(|_| Instant::now());
                 self.voice_seq = seq;
                 self.voice_start = Some(Instant::now());
                 self.verdict = None;
@@ -749,7 +711,6 @@ impl Controller {
         self.check_end();
         let words = content_words(&text);
         self.stream_words = words.clone();
-        self.idle_since = None;
         match &self.turn {
             Some(t) if t.committed => {
                 let fresh = fresh_words(&words, &t.base);
@@ -828,7 +789,7 @@ impl Controller {
         self.gate.open(id);
         let brief = self.heard.as_ref().is_some_and(|h| h.refined && h.text == text) && dangling(&text);
         let text = match &self.carry {
-            Some(c) if text != SILENCE => format!("{c} {text}"),
+            Some(c) => format!("{c} {text}"),
             _ => text,
         };
         self.settings.talking.store(true, Relaxed);
@@ -869,7 +830,6 @@ impl Controller {
             mood: None,
             opener: None,
             opener_played: false,
-            nudge: false,
             aside: false,
             calls: Vec::new(),
             owed: Vec::new(),
@@ -935,11 +895,9 @@ impl Controller {
         self.gate.commit(t.id);
         self.speech.rearm(false);
         remember(&mut self.history, Message::user(t.prompt.clone()));
-        if t.nudge || t.aside {
-            let shown = if t.nudge { SILENCE } else { t.text.as_str() };
-            println!("{}", if self.dim { format!("\x1b[2m{shown}\x1b[0m") } else { shown.to_string() });
+        if t.aside {
+            println!("{}", if self.dim { format!("\x1b[2m{}\x1b[0m", t.text) } else { t.text.clone() });
         } else {
-            self.nudges = 0;
             println!("you: {}", t.text);
         }
         if !t.held_chunks.is_empty() {
@@ -1035,7 +993,6 @@ impl Controller {
         self.poll_onset();
         let Some(t) = self.turn.take() else { return };
         self.gate.close(t.id);
-        self.idle_since = (!t.aside).then(Instant::now);
         let gaps = self.playback.gaps();
         if gaps.0 > self.gaps.0 {
             log::debug!("audio ran dry {}x, {}ms in total", gaps.0 - self.gaps.0, gaps.1 - self.gaps.1);
@@ -1115,8 +1072,7 @@ impl Controller {
     }
 
     fn leadin(&self, t: &Turn) -> bool {
-        !t.nudge
-            && !t.words.is_empty()
+        !t.words.is_empty()
             && (is_backchannel(&t.words) || t.words.iter().all(|w| w == WORDLESS))
             && self.history.iter().any(|m| m.role == Role::Assistant)
             && !self.asked_last()
