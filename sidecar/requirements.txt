@@ -1,6 +1,6 @@
 fastapi==0.165.0
 huggingface-hub==2.4.0
-mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@402e3b9e4bd9bbecedc917b290896e5588c76f58
+mlx-audio @ https://github.com/Blaizzy/mlx-audio/archive/402e3b9e4bd9bbecedc917b290896e5588c76f58.tar.gz
 mlx==0.32.4
 numpy==2.5.5
 soundfile==0.14.0

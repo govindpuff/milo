@@ -36,8 +36,6 @@ if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
 fi
 
 repo=$(cd "$(dirname "$0")" && pwd)
-root="$HOME/.cache/milo"
-venv="$root/venv"
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
 user_path="$PATH"
 export PATH="$cargo_bin:$HOME/.local/bin:$PATH"
@@ -63,13 +61,6 @@ if ! command -v imsg >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
   brew install steipete/tap/imsg || true
 fi
 
-say "Setting up the voice environment in ~/.cache/milo/venv"
-mkdir -p "$root"
-if [ ! -x "$venv/bin/python" ]; then
-  uv venv --python 3.12 "$venv"
-fi
-uv pip install --python "$venv/bin/python" -r "$repo/sidecar/requirements.txt"
-
 say "Building and installing milo"
 cargo install --locked --path "$repo/crates/milo"
 
@@ -79,5 +70,5 @@ case ":$user_path:" in
   *) say "Note: $cargo_bin is not on your PATH yet. Open a new terminal, or add it to PATH." ;;
 esac
 say "Done. Start it with: milo"
-say "The first start asks for your OpenAI API key, downloads the speech and voice models, and macOS asks for microphone access."
+say "The first start asks for your OpenAI API key, installs the voice, downloads the speech and voice models, and macOS asks for microphone access."
 say "More options: milo --help"

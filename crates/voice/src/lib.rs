@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 const SCRIPT: &str = include_str!("../../../sidecar/voice_server.py");
+const NEEDS: &str = include_str!("../../../sidecar/requirements.txt");
+const PYTHON: &str = "3.12";
 const ENGINE: &str = "breeze";
 const START_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SAMPLE_RATE: u32 = 24000;
@@ -33,6 +35,50 @@ fn root() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cache/milo"))
 }
 
+pub fn fresh() -> bool {
+    !root().is_ok_and(|root| root.join("venv/bin/python").is_file())
+}
+
+fn uv(args: &[&std::ffi::OsStr]) -> Result<()> {
+    let beside = std::env::current_exe().ok().map(|exe| exe.with_file_name("uv")).filter(|uv| uv.is_file());
+    let uv = beside.unwrap_or_else(|| PathBuf::from("uv"));
+    let status = Command::new(&uv)
+        .args(args)
+        .stdin(Stdio::null())
+        .status()
+        .with_context(|| format!("could not run {}; run ./setup.sh", uv.display()))?;
+    if !status.success() {
+        bail!("{} {} failed ({status})", uv.display(), args[0].to_string_lossy());
+    }
+    Ok(())
+}
+
+fn install(root: &Path) -> Result<()> {
+    let venv = root.join("venv");
+    let python = venv.join("bin/python");
+    let have = venv.join("requirements.txt");
+    if python.is_file() && std::fs::read_to_string(&have).is_ok_and(|have| have == NEEDS) {
+        return Ok(());
+    }
+    log::info!("installing the voice in {}", venv.display());
+    std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
+    let needs = root.join("requirements.txt");
+    std::fs::write(&needs, NEEDS).with_context(|| format!("write {}", needs.display()))?;
+    if !python.is_file() {
+        uv(&["venv".as_ref(), "--python".as_ref(), PYTHON.as_ref(), venv.as_os_str()])?;
+    }
+    uv(&[
+        "pip".as_ref(),
+        "install".as_ref(),
+        "--python".as_ref(),
+        python.as_os_str(),
+        "-r".as_ref(),
+        needs.as_os_str(),
+    ])?;
+    std::fs::write(&have, NEEDS).with_context(|| format!("write {}", have.display()))?;
+    Ok(())
+}
+
 fn tail(path: &Path, lines: usize) -> String {
     let text = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let all: Vec<&str> = text.lines().collect();
@@ -54,11 +100,8 @@ impl Voice {
         }
 
         let root = root()?;
-        let venv = root.join("venv");
-        let python = venv.join("bin/python");
-        if !python.is_file() {
-            bail!("the voice environment {} is missing; run ./setup.sh", venv.display());
-        }
+        let python = root.join("venv/bin/python");
+        install(&root).context("the voice could not be installed")?;
         let reference = match (&cfg.ref_wav, &cfg.ref_text) {
             (Some(wav), Some(text)) => Some((wav, text)),
             (None, None) => None,
