@@ -16,6 +16,7 @@ struct Prefs: Codable, Equatable {
     var listeningSounds = true
     var inputDevice = ""
     var outputDevice = ""
+    var setup = false
 
     var provider: String { model.split(separator: "/", maxSplits: 1).first.map(String.init) ?? "" }
     var name: String { model.split(separator: "/", maxSplits: 1).dropFirst().first.map(String.init) ?? "" }
@@ -24,6 +25,7 @@ struct Prefs: Codable, Equatable {
         var same = self
         same.autoApprove = old.autoApprove
         same.pushToTalk = old.pushToTalk
+        same.setup = old.setup
         return same != old
     }
 }
@@ -59,7 +61,6 @@ final class Desk: ObservableObject {
     @Published var keys: [String: String] = [:]
     @Published var detail = ""
     @Published var voice = ""
-    @Published var wanted: String?
     @Published var fresh = false
     @Published var state = "starting"
     var ask: (Ask) -> Void = { _ in }
@@ -395,94 +396,13 @@ struct SettingsView: View {
     }
 }
 
-struct SetupView: View {
-    @ObservedObject var desk: Desk
-    @ObservedObject var grants: Grants
-    @State var key = ""
-    let close: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 6) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 72, height: 72)
-                Text("Welcome to Milo").font(.title2.bold())
-                Text(
-                    desk.wanted.map { "Paste your \(named($0)) API key to get started." }
-                        ?? "Milo needs these to hear you and to use your apps."
-                )
-                .foregroundStyle(.secondary)
-            }
-            .padding(.top, 24)
-            Form {
-                if let provider = desk.wanted {
-                    Section {
-                        SecureField("API key", text: $key)
-                            .onSubmit { if !key.isEmpty { desk.enter(provider, key) } }
-                        if let note = desk.note(provider) {
-                            Text(note).font(.callout).foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
-                    Section {
-                        Permissions(grants: grants) { desk.ask(Ask(type: "restart")) }
-                    }
-                    Section {
-                        LabeledContent {
-                            Button("Copy Address") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString("chrome://inspect/#remote-debugging", forType: .string)
-                            }
-                        } label: {
-                            Text("Chrome")
-                            Text("To let Milo use websites, open this address in Chrome and allow remote debugging.")
-                        }
-                    }
-                    Section {
-                        if desk.state == "starting" {
-                            HStack(spacing: 10) {
-                                ProgressView().controlSize(.small)
-                                Text(
-                                    desk.fresh
-                                        ? "Downloading the voice and speech models. This can take several minutes."
-                                        : "Milo is starting."
-                                )
-                            }
-                        } else {
-                            Label("Milo is ready. Start talking.", systemImage: "checkmark.circle.fill")
-                        }
-                    }
-                }
-            }
-            .formStyle(.grouped)
-            Divider()
-            HStack {
-                Spacer()
-                if let provider = desk.wanted {
-                    Button("Continue") { desk.enter(provider, key) }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(key.isEmpty || desk.keys[provider] == "checking")
-                } else {
-                    Button("Done", action: close)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!grants.all)
-                }
-            }
-            .padding(12)
-        }
-        .frame(width: 480, height: desk.wanted == nil ? 560 : 300)
-    }
-}
-
 @MainActor
 final class Windows {
     var open: [String: NSWindow] = [:]
 
-    func show(_ title: String, closes: Bool = true, _ view: some View) {
+    func show(_ title: String, _ view: some View) {
         if open[title] == nil {
-            let style: NSWindow.StyleMask = closes ? [.titled, .closable] : [.titled]
-            let window = NSWindow(contentRect: .zero, styleMask: style, backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
             let host = NSHostingController(rootView: view)
             host.sizingOptions = .preferredContentSize
             window.title = title
@@ -494,6 +414,32 @@ final class Windows {
         }
         NSApp.activate(ignoringOtherApps: true)
         open[title]?.makeKeyAndOrderFront(nil)
+    }
+
+    func wizard(_ view: some View) {
+        open["Milo"]?.close()
+        let window = NSWindow(
+            contentRect: .zero,
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSHostingController(rootView: view)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        host.sizingOptions = []
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(button)?.isHidden = true
+        }
+        window.contentViewController = host
+        window.setContentSize(Look.size)
+        window.center()
+        open["Milo"] = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     func close(_ title: String) {

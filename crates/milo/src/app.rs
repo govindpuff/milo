@@ -23,6 +23,7 @@ const RELAUNCH: &str = "while kill -0 \"$0\" 2>/dev/null; do sleep 0.1; done; ex
 
 static RESTART: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
+static READY: AtomicBool = AtomicBool::new(true);
 static QUIT: Mutex<Option<UnboundedSender<Event>>> = Mutex::new(None);
 
 fn bundle() -> Option<PathBuf> {
@@ -50,21 +51,28 @@ pub fn settle() -> Result<()> {
     Ok(())
 }
 
-pub fn setup(names: &[&String]) -> Result<()> {
+pub fn setup(names: impl Fn(&Config) -> [String; 3]) -> Result<()> {
     if !bundled() {
         return Ok(());
     }
-    let mut shown = false;
+    let fresh = voice::fresh();
+    std::thread::spawn(|| {
+        if let Err(e) = voice::prepare() {
+            log::warn!("{e:#}");
+        }
+    });
     loop {
         let config = Config::load()?;
-        let wanted = names.iter().find_map(|name| config.wants(name));
-        if wanted.is_some() || (!shown && voice::fresh()) {
-            notch::post(json!({ "type": "setup", "provider": wanted }));
-            shown = true;
-        }
-        let Some(id) = wanted else { return Ok(()) };
-        while !Config::load()?.keyed(&id) {
+        let wanted = names(&config).iter().find_map(|name| config.wants(name));
+        READY.store(false, Relaxed);
+        let first = !config.flag("setup");
+        notch::post(json!({ "type": "setup", "first": first, "provider": wanted, "fresh": fresh }));
+        while !READY.load(Relaxed) {
             std::thread::sleep(WAIT);
+        }
+        let config = Config::load()?;
+        if names(&config).iter().all(|name| config.wants(name).is_none()) {
+            return Ok(());
         }
     }
 }
@@ -147,10 +155,11 @@ fn answer(message: &Value, port: u16) -> Result<()> {
             let changed = config::update(settings)?;
             tools::unasked(Config::load()?.flag("auto_approve"));
             notch::post(state()?);
-            if changed {
+            if changed && READY.load(Relaxed) {
                 restart();
             }
         }
+        Some("ready") => READY.store(true, Relaxed),
         Some("restart") => match QUIT.lock().unwrap().is_some() {
             true => restart(),
             false => again(),

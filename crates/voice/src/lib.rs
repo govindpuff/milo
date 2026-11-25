@@ -53,7 +53,13 @@ fn uv(args: &[&std::ffi::OsStr]) -> Result<()> {
     Ok(())
 }
 
+pub fn prepare() -> Result<()> {
+    install(&root()?)
+}
+
 fn install(root: &Path) -> Result<()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let venv = root.join("venv");
     let python = venv.join("bin/python");
     let have = venv.join("requirements.txt");

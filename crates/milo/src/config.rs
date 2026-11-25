@@ -21,8 +21,9 @@ const SETTINGS: &[&str] = &[
     SOUNDS,
     "input_device",
     "output_device",
+    "setup",
 ];
-const LIVE: &[&str] = &["auto_approve", "push_to_talk"];
+const LIVE: &[&str] = &["auto_approve", "push_to_talk", "setup"];
 
 struct Known {
     id: &'static str,
@@ -202,7 +203,7 @@ impl Config {
         for key in SETTINGS {
             let value = match *key {
                 "model" => self.named(key).unwrap_or_else(|| DEFAULT.to_string()).into(),
-                "auto_approve" | "push_to_talk" | "headphones" | SOUNDS => self.flag(key).into(),
+                "auto_approve" | "push_to_talk" | "headphones" | "setup" | SOUNDS => self.flag(key).into(),
                 _ => self.named(key).unwrap_or_default().into(),
             };
             all.insert(key.to_string(), value);

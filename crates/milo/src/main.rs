@@ -182,6 +182,13 @@ enum Command {
     Models { provider: Option<String> },
 }
 
+fn names(args: &Args, config: &Config) -> [String; 3] {
+    let main = args.model.clone().or_else(|| config.named("model")).unwrap_or_else(|| config::DEFAULT.to_string());
+    let small = args.small_model.clone().or_else(|| config.named("small_model")).unwrap_or_else(|| main.clone());
+    let vision = args.vision_model.clone().or_else(|| config.named("vision_model")).unwrap_or_else(|| main.clone());
+    [main, small, vision]
+}
+
 struct Models {
     main: Chosen,
     small: Chosen,
@@ -191,16 +198,10 @@ struct Models {
 impl Models {
     fn pick(args: &Args) -> Result<Models> {
         let mut config = Config::load()?;
-        let main = args.model.clone().or_else(|| config.named("model")).unwrap_or_else(|| config::DEFAULT.to_string());
-        let small = args.small_model.clone().or_else(|| config.named("small_model")).unwrap_or_else(|| main.clone());
-        let vision = args.vision_model.clone().or_else(|| config.named("vision_model")).unwrap_or_else(|| main.clone());
+        let [main, small, vision] = names(args, &config);
         if args.task.is_none() {
             for name in [&main, &small, &vision] {
                 config.ask(name, args.port)?;
-            }
-            if notch::on() {
-                app::setup(&[&main, &small, &vision])?;
-                config = Config::load()?;
             }
         }
         let models = Models {
@@ -355,6 +356,9 @@ fn solo(args: Args, task: &str) -> Result<()> {
 }
 
 fn run(args: Args) -> Result<()> {
+    if notch::on() {
+        app::setup(|config| names(&args, config))?;
+    }
     let args = settled(args)?;
     tools::unasked(args.dangerously_auto_approve);
     let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();

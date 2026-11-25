@@ -81,6 +81,8 @@ struct Message: Decodable {
     let models: [String]?
     let voice: String?
     let version: String?
+    let first: Bool?
+    let fresh: Bool?
     let url: String?
 }
 
@@ -448,7 +450,6 @@ final class Controller {
         }
         RunLoop.main.add(timer, forMode: .common)
         keys()
-        if Bundle.main.bundlePath.hasSuffix(".app"), !grants.all { setup() }
     }
 
     func place() {
@@ -558,8 +559,18 @@ final class Controller {
         windows.show("Milo Settings", SettingsView(desk: desk, grants: grants))
     }
 
-    func setup() {
-        windows.show("Milo", closes: false, SetupView(desk: desk, grants: grants) { [weak self] in
+    func setup(first: Bool, keyed: Bool) {
+        var steps: [Step] = []
+        if first { steps.append(.welcome) }
+        if !keyed { steps.append(.key) }
+        if !grants.all { steps.append(.access) }
+        if first { steps += [.voice, .options] }
+        guard !steps.isEmpty else {
+            send(Ask(type: "ready"))
+            return
+        }
+        steps.append(.finish)
+        windows.wizard(Wizard(desk: desk, grants: grants, steps: steps, first: first) { [weak self] in
             self?.windows.close("Milo")
         })
     }
@@ -593,13 +604,12 @@ final class Controller {
             guard let provider = message.provider else { return }
             desk.keys[provider] = message.state
             desk.detail = message.detail ?? ""
-            if message.state == "saved", desk.wanted == provider { desk.wanted = nil }
         case "models":
             if let provider = message.provider { desk.models[provider] = message.models ?? [] }
         case "setup":
-            desk.wanted = message.provider
-            desk.fresh = true
-            setup()
+            desk.fresh = message.fresh ?? false
+            desk.state = "starting"
+            setup(first: message.first ?? false, keyed: message.provider == nil)
         case "update":
             if let version = message.version, let url = message.url { menu.offer(version, url) }
         case "card":

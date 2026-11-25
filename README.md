@@ -18,12 +18,15 @@ To hear the voices, watch the [demo video with sound](docs/demo.mp4).
 
 1.  Download [Milo.dmg](https://github.com/govindpuff/milo/releases/latest/download/Milo.dmg),
     open it, and drag Milo to your Applications folder.
-2.  Open Milo, and paste your OpenAI API key.
-3.  Allow the microphone. To let Milo use your apps, also allow Accessibility
-    and Screen Recording.
+2.  Open Milo. A setup window asks for the following:
 
-    Milo then downloads its voice and speech models, which can take several
-    minutes.
+    - Your API key
+    - Access to the microphone, Accessibility, and Screen Recording
+    - The voice that you want
+
+    Milo doesn't listen until you finish the setup.
+3.  Wait while Milo downloads its voice and speech models, which can take
+    several minutes.
 4.  When the window says that Milo is ready, start talking.
 
 Milo has no window of its own. It shows a panel in the notch and an **m** in

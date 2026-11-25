@@ -189,8 +189,10 @@ files in `app`. `scripts/release.sh` has Apple notarize the app and makes
 `target/Milo.dmg`.
 
 When the binary runs inside the app, it writes its output to
-`~/Library/Logs/Milo/milo.log`, and it shows a window at the first start that
-asks for the API key and the permissions. At each start, the app asks GitHub
+`~/Library/Logs/Milo/milo.log`. Before it loads anything, it asks the panel
+whether a setup window is needed: at the first start, when the API key is
+missing, or when a permission is missing. It waits until that window is
+finished, so milo never listens without the permissions. At each start, the app asks GitHub
 for the latest release, and the menu offers a newer one.
 
 The settings window and `config.json` hold the same settings. The window
