@@ -59,7 +59,7 @@ const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 const NOWHERE: &str = "You are not in any tab or window yet. Go to one with go";
 const LOST: &str = "The place you were in is gone.";
-const HOSTING: &str = " (Milo runs in one window of this app. That window is hidden from you and off limits; the app's other windows are fine to work in)";
+const HOSTING: &str = " (Milo runs in this app)";
 const SPRUNG: &str = ". It opened in a new tab, and you are in that tab now";
 const UNLINKED: &str = "the browser's tabs cannot be reached; work in the browser's window with go, click and press";
 const OFF: &str = "no browser allows remote debugging, so websites are read off the screen, which is slower and less exact. To fix that, open chrome://inspect/#remote-debugging in the browser and turn on Allow remote debugging for this browser instance";
@@ -318,10 +318,6 @@ async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
         }
         Err(e) => log::warn!("the browser could not be reached, so websites are read off the screen instead: {e:#}"),
     }
-}
-
-pub fn home() {
-    std::thread::spawn(|| control::call(&json!({ "op": "start" })));
 }
 
 pub async fn warm() {

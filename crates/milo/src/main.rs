@@ -450,9 +450,6 @@ fn run(args: Args) -> Result<()> {
 
     let busy = Arc::new(AtomicBool::new(false));
     let hands = tools.as_ref().is_some_and(|tools| tools.hands());
-    if hands {
-        computer::home();
-    }
 
     if notch::on() {
         let _rt = rt.enter();

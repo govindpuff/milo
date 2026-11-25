@@ -193,9 +193,8 @@ buttons, fields, and text. milo brings the app to the front while it works
 there, and puts your app back when the plan finishes.
 
 milo starts each plan in the place where it worked last, or goes to the app or
-the tab that the plan names. It never works in the terminal window that milo
-runs in. milo can work in the other windows of your terminal app, so open a
-new window when you want it to run a command.
+the tab that the plan names. milo can work in your terminal app too, including
+the window that milo runs in.
 
 If something asks milo to allow, confirm, sign in, pay, delete, or send
 something that the plan doesn't cover, milo stops and tells you what it asks.
