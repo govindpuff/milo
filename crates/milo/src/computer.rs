@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
@@ -25,6 +25,8 @@ const LOADED: Duration = Duration::from_secs(12);
 const SCREEN: &str = "What is there now, as a list:\n";
 const PICTURED: &str = "What is there now, as a picture and as a list:\n";
 const SPARSE: usize = 5;
+const NAMED: usize = 24;
+const NEAR: usize = 4;
 const STOP: &str = "stop";
 const MOVED: f64 = 0.8;
 const SPOT: u8 = 8;
@@ -57,7 +59,7 @@ const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 const NOWHERE: &str = "You are not in any tab or window yet. Go to one with go";
 const LOST: &str = "The place you were in is gone.";
-const HOSTING: &str = " (Milo itself runs in this app; never work in it)";
+const HOSTING: &str = " (Milo runs in one window of this app. That window is hidden from you and off limits; the app's other windows are fine to work in)";
 const SPRUNG: &str = ". It opened in a new tab, and you are in that tab now";
 const UNLINKED: &str = "the browser's tabs cannot be reached; work in the browser's window with go, click and press";
 const OFF: &str = "no browser allows remote debugging, so websites are read off the screen, which is slower and less exact. To fix that, open chrome://inspect/#remote-debugging in the browser and turn on Allow remote debugging for this browser instance";
@@ -316,6 +318,10 @@ async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
         }
         Err(e) => log::warn!("the browser could not be reached, so websites are read off the screen instead: {e:#}"),
     }
+}
+
+pub fn home() {
+    std::thread::spawn(|| control::call(&json!({ "op": "start" })));
 }
 
 pub async fn warm() {
@@ -968,10 +974,42 @@ async fn arrive(s: &mut Session) {
     }
 }
 
+fn squeeze(text: &str) -> String {
+    let mut recent: VecDeque<(&str, &str)> = VecDeque::new();
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let number = line.strip_prefix('[').and_then(|rest| rest.split_once("] ")).map(|(number, _)| number);
+        let name =
+            line.find('"').zip(line.rfind('"')).filter(|(from, to)| to > from).map(|(from, to)| &line[from..=to]);
+        let (Some(number), Some(name)) = (number, name) else {
+            out.push(line.to_string());
+            continue;
+        };
+        match recent.iter().find(|(_, had)| *had == name) {
+            Some((first, _)) if name.chars().count() >= NAMED => {
+                out.push(line.replacen(name, &format!("same name as [{first}]"), 1));
+            }
+            _ => out.push(line.to_string()),
+        }
+        recent.push_back((number, name));
+        if recent.len() > NEAR {
+            recent.pop_front();
+        }
+    }
+    out.join("\n")
+}
+
+fn titled(seen: &Seen) -> Vec<&str> {
+    seen.text
+        .lines()
+        .filter(|line| ["Tab: ", "Window: ", "App: "].iter().any(|start| line.starts_with(start)))
+        .collect()
+}
+
 fn show(seen: &Seen, pictured: bool) {
     let sparse = seen.text.lines().filter(|line| line.starts_with('[')).count() < SPARSE;
     let image = seen.image.clone().filter(|_| pictured || sparse);
-    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((seen.text.clone(), image));
+    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((squeeze(&seen.text), image));
 }
 
 fn hide() {
@@ -1098,7 +1136,7 @@ pub async fn perform(llm: &Llm, mut call: Call) -> String {
         acted: !["go", "look", "read", "tab"].contains(&call.name.as_str()),
     });
     notch::revise(id, &card(&name, brief(&did)));
-    show(&now, wasted || call.name == "look" || did.contains(UNMOVED));
+    show(&now, wasted || call.name == "look" || did.contains(UNMOVED) || titled(&before) != titled(&now));
     s.seen = Some(now);
     did
 }

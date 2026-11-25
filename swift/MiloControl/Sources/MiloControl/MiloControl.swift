@@ -42,6 +42,10 @@ enum Limit {
 
 struct Failure: Error {
     let text: String
+    static let home = Failure(
+        text:
+            "The only window in front here is the one Milo runs in, and that one is off limits. Open another window first with menu, like Shell > New Window, and work in that one"
+    )
 }
 
 let inputs: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
@@ -116,6 +120,8 @@ nonisolated(unsafe) var roster: Set<CGWindowID> = []
 nonisolated(unsafe) var nook: CGWindowID?
 nonisolated(unsafe) var held: pid_t?
 nonisolated(unsafe) var known: Set<pid_t> = []
+nonisolated(unsafe) var den: CGWindowID?
+nonisolated(unsafe) var denned = false
 
 func leader() -> pid_t? {
     var ahead = [UInt32](repeating: 0, count: 2)
@@ -208,6 +214,26 @@ func host() -> pid_t? {
         if pid <= 1 { return nil }
     }
     return nil
+}
+
+func settle() {
+    if denned { return }
+    denned = true
+    guard let pid = host() else { return }
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, Limit.brief)
+    if let own = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute) { den = number(own) }
+}
+
+func away(_ pid: pid_t) -> Bool {
+    guard let den else { return true }
+    let app = AXUIElementCreateApplication(pid)
+    guard let ahead = element(app, kAXFocusedWindowAttribute), number(ahead) == den else { return true }
+    guard let target = window(app) else { return false }
+    AXUIElementSetAttributeValue(target, kAXMainAttribute as CFString, kCFBooleanTrue)
+    AXUIElementPerformAction(target, kAXRaiseAction as CFString)
+    usleep(Limit.taken)
+    return element(app, kAXFocusedWindowAttribute).map { number($0) != den } ?? false
 }
 
 func around() -> [String: Any] {
@@ -327,17 +353,18 @@ func installed(_ request: [String: Any]) throws -> String {
 }
 
 func window(_ app: AXUIElement) -> AXUIElement? {
-    let all = elements(app, kAXWindowsAttribute)
+    let all = elements(app, kAXWindowsAttribute).filter { number($0) != den }
     let ids = Set(all.map(number))
+    let open = { (name: String) in element(app, name).flatMap { number($0) == den ? nil : $0 } }
     if let pinned, let kept = all.first(where: { number($0) == pinned }) {
-        let ahead = element(app, kAXFocusedWindowAttribute)
+        let ahead = open(kAXFocusedWindowAttribute)
         guard let ahead, number(ahead) != pinned, !roster.contains(number(ahead)), ids.contains(number(ahead)) else {
             return kept
         }
         repin(ahead, ids)
         return ahead
     }
-    let found = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute) ?? all.first
+    let found = open(kAXFocusedWindowAttribute) ?? open(kAXMainWindowAttribute) ?? all.first
     if let found { repin(found, ids) } else { pinned = nil }
     return found
 }
@@ -596,6 +623,9 @@ func look(_ request: [String: Any]) throws -> [String: Any] {
     boxes = []
     var head = "App: \(running.localizedName ?? "unknown")"
     guard let target = window(app), let bounds = frame(target), bounds.width > 1, bounds.height > 1 else {
+        if den != nil, running.processIdentifier == host() {
+            return ["text": head + "\n" + Failure.home.text]
+        }
         return ["text": head + "\nIt has no window open. Use menu or press to open one."]
     }
     pane = bounds
@@ -729,6 +759,7 @@ func crown(_ process: [UInt32], _ window: CGWindowID) {
 }
 
 func borrow(_ pid: pid_t, _ work: () -> Void) {
+    guard away(pid) else { return }
     var ahead = [UInt32](repeating: 0, count: 2)
     guard let foremost, foremost(&ahead) == 0, let mine = psn(pid), mine != ahead else {
         work()
@@ -1073,6 +1104,7 @@ func restore(_ pid: pid_t, _ patient: Bool = false) {
 func write(_ request: [String: Any]) throws -> String {
     guard let text = request["text"] as? String, !text.isEmpty else { throw Failure(text: "give the text to type") }
     let pid = try front().0.processIdentifier
+    guard away(pid) else { throw Failure.home }
     var place = "where the cursor is"
     var field: AXUIElement?
     if request["number"] is NSNumber {
@@ -1144,6 +1176,7 @@ func press(_ request: [String: Any]) throws -> String {
     }
     guard let code else { throw Failure(text: "\(combo) has no key, only modifiers") }
     let pid = try front().0.processIdentifier
+    guard away(pid) else { throw Failure.home }
     borrow(pid) { stroke(code, mask, pid) }
     return "pressed \(combo)"
 }
@@ -1172,12 +1205,18 @@ func menu(_ request: [String: Any]) throws -> String {
         }
         if index + 1 == wanted.count {
             var failure: Failure?
-            borrow(pid) {
+            let choose = {
                 if (attribute(hit, kAXEnabledAttribute) as? Bool) == false {
                     failure = Failure(text: "\(path) is turned off right now")
                 } else if AXUIElementPerformAction(hit, kAXPressAction as CFString) != .success {
                     failure = Failure(text: "\(path) could not be chosen")
                 }
+            }
+            if window(app) == nil {
+                choose()
+            } else {
+                guard away(pid) else { throw Failure.home }
+                borrow(pid, choose)
             }
             if let failure { throw failure }
         }
@@ -1197,6 +1236,7 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
                 "Accessibility is turned off for the terminal app, so nothing on the screen can be used. They need to turn it on in System Settings, under Privacy and Security, Accessibility, and then start milo again"
         )
     }
+    settle()
     switch request["op"] as? String {
     case "start": return kept()
     case "drop":
