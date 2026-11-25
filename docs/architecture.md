@@ -5,8 +5,9 @@ code. For installation and use, see the [README](../README.md).
 
 ## Overview
 
-milo is one Rust binary. Speech recognition, turn detection, and the voice run
-on your Mac. The language model is a hosted model.
+milo is one Rust binary, which is also the executable of `Milo.app`. Speech
+recognition, turn detection, and the voice run on your Mac. The language
+model is a hosted model.
 
 ```text
 microphone -> capture -> speech recognition -+-> controller -> reply -> voice -> gate -> speakers
@@ -18,13 +19,13 @@ microphone -> capture -> speech recognition -+-> controller -> reply -> voice ->
 
 | Crate | What it does |
 |---|---|
-| `crates/milo` | The binary. `main.rs` has the options and the system prompt. `controller.rs` runs the conversation. `reply.rs` streams a reply and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` has the reaction clips. `tools.rs` has the tools and memory. `computer.rs` has the tools that act in your apps. `skills.rs` keeps the notes about each app and website. `config.rs` reads the providers, the models, and the API keys. |
+| `crates/milo` | The binary. `main.rs` has the options and the system prompt. `controller.rs` runs the conversation. `reply.rs` streams a reply and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` has the reaction clips. `tools.rs` has the tools and memory. `computer.rs` has the tools that act in your apps. `skills.rs` keeps the notes about each app and website. `config.rs` reads the providers, the models, the API keys, and the settings. `app.rs` has what only the app needs: the log file, the first start, the answers to the settings window, and the restart. |
 | `crates/audio` | Microphone and speaker I/O, resampling, and the echo reference. |
 | `crates/speech` | Bindings to `swift/MiloSpeech`: echo removal and Parakeet speech recognition through FluidAudio. |
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn). |
 | `crates/llm` | The model client, which streams text and tool calls over chat completions or the OpenAI Responses API, and the sentence chunker. |
 | `crates/voice` | Starts the Python voice server for the Breeze voice, and streams audio from it. |
-| `crates/notch` | Bindings to `swift/MiloNotch`, the panel in the notch. |
+| `crates/notch` | Bindings to `swift/MiloNotch`: the panel in the notch, the menu bar item, the settings window, and the window of the first start. |
 | `crates/control` | Bindings to `swift/MiloControl`, which reads and uses app windows through the macOS Accessibility API. |
 | `crates/browser` | The client for the Chrome DevTools Protocol. |
 
@@ -157,7 +158,8 @@ A model name is `PROVIDER/MODEL`. `config.rs` has the providers: `openai`,
 milo looks for the API key of a provider in `~/.config/milo/auth.json`, and
 then in the provider's environment variable. If it finds none, it asks for
 the key at start, checks it with a request to the provider, and
-saves it in `auth.json`.
+saves it in `auth.json`. The app asks in a window, and the command asks in
+the terminal.
 
 milo uses up to three models: the main model, `small_model` for the notes
 about a place, and `vision_model` to find a thing in a picture. The last two
@@ -166,7 +168,9 @@ default to the main model.
 ## Voice
 
 milo starts `sidecar/voice_server.py` with the Python in `~/.cache/milo/venv`
-and streams audio from it. Requests of the same turn share a session, so a
+and streams audio from it. If that Python environment is missing or its
+packages have changed, milo first creates it with `uv`. The app has its own
+copy of `uv`. Requests of the same turn share a session, so a
 reply sounds like one delivery instead of separate sentences. Without
 `--voice-ref`, the server creates the voice once from `--voice-design` and
 saves it in `~/.cache/milo/voices`.
@@ -178,17 +182,33 @@ milo and the panel exchange JSON messages: milo sends the status and the
 cards, and the panel sends back the action that you clicked. The keyboard
 shortcuts are Carbon hot keys, which work in any app.
 
+## The app
+
+`scripts/bundle.sh` builds `target/Milo.app` from the binary, `uv`, and the
+files in `app`. `scripts/release.sh` has Apple notarize the app and makes
+`target/Milo.dmg`.
+
+When the binary runs inside the app, it writes its output to
+`~/Library/Logs/Milo/milo.log`, and it shows a window at the first start that
+asks for the API key and the permissions. At each start, the app asks GitHub
+for the latest release, and the menu offers a newer one.
+
+The settings window and `config.json` hold the same settings. The window
+sends each change to `app.rs`, which saves it. A change to the model, the
+voice, or the audio devices stops the conversation and starts the app again.
+
 ## Files
 
 | Path | Contents |
 |---|---|
-| `~/.config/milo/config.json` | The models. |
-| `~/.config/milo/auth.json` | API keys that `milo auth` saved. |
+| `~/.config/milo/config.json` | The models and the settings. |
+| `~/.config/milo/auth.json` | The saved API keys. |
 | `~/.config/milo/memory.md` | Memory, one fact per line. |
 | `~/.config/milo/tools.json` | Custom tools. |
 | `~/.config/milo/skills/` | Notes about each app and website. |
 | `~/.cache/milo/` | The voice server's Python environment, designed voices, reaction clips, and the turn models. |
 | `~/.cache/huggingface/hub/` | The voice models. |
 | `~/Library/Application Support/FluidAudio/Models/` | The speech recognition and echo removal models. |
+| `~/Library/Logs/Milo/milo.log` | The app's log. |
 | `$TMPDIR/milo-voice-PORT.log` | The voice server's log. |
 | `$TMPDIR/milo-computer/` | The picture, the list, and the action of each step of the last plan. |

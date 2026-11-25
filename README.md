@@ -12,34 +12,22 @@ To hear the voices, watch the [demo video with sound](docs/demo.mp4).
 ## Requirements
 
 - A Mac with Apple silicon and macOS 14 or later
-- Xcode 26, or the Xcode Command Line Tools with Swift 6.2 or later
 - An API key for OpenAI, Anthropic, Google, or OpenRouter
 
 ## Get started
 
-1.  Clone the repository and run the setup script:
+1.  Download [Milo.dmg](https://github.com/govindpuff/milo/releases/latest/download/Milo.dmg),
+    open it, and drag Milo to your Applications folder.
+2.  Open Milo, and paste your OpenAI API key.
+3.  Allow the microphone. To let Milo use your apps, also allow Accessibility
+    and Screen Recording.
 
-    ```sh
-    git clone https://github.com/govindpuff/milo
-    cd milo
-    ./setup.sh
-    ```
+    Milo then downloads its voice and speech models, which can take several
+    minutes.
+4.  When the window says that Milo is ready, start talking.
 
-2.  Start milo:
-
-    ```sh
-    milo
-    ```
-
-    The first start asks for your OpenAI API key, unless `OPENAI_API_KEY` is
-    set, and saves it in `~/.config/milo/auth.json`. It then downloads the
-    speech and voice models, which can take several minutes. When macOS asks
-    whether your terminal can use the microphone, allow access.
-
-3.  When milo prints `listening`, start talking.
-
-If you use headphones, start milo with `milo --no-aec`. To quit, press
-Control+C.
+Milo has no window of its own. It shows a panel in the notch and an **m** in
+the menu bar. To quit, click the **m**, and then click **Quit Milo**.
 
 ## Things to try
 
@@ -69,14 +57,31 @@ seconds, milo doesn't act.
 | Control+Option+M | Mutes or unmutes your microphone. |
 | Control+Option+Space | Unmutes your microphone while you hold the keys. |
 
-To skip the approval, start milo with `milo --dangerously-auto-approve`.
+To skip the approval, turn on **Approve everything automatically** in the
+settings.
+
+## Settings
+
+To open the settings, click the **m** in the menu bar, and then click
+**Settings**. You can change the following:
+
+- The provider, its API key, and the model
+- The voice
+- The microphone and the speakers
+- **Headphones**, which turns off echo cancellation
+- **Push to talk**
+- **Listening sounds**
+- **Approve everything automatically**
+- **Open at login**
+
+When a change needs it, Milo restarts.
 
 ## Let milo use your apps
 
 milo can click, type, and press keys in your apps and on websites.
 
-1.  In System Settings, go to **Privacy & Security**, and turn on access for
-    your terminal app under **Accessibility** and **Screen Recording**.
+1.  In the settings, under **Permissions**, allow **Accessibility** and
+    **Screen Recording**.
 2.  In Chrome, go to `chrome://inspect/#remote-debugging`, and turn on
     **Allow remote debugging for this browser instance**.
 3.  Start milo again. When Chrome asks whether to allow remote debugging,
@@ -91,7 +96,8 @@ milo opens websites in a browser window of its own and leaves your tabs as
 they are. This works in Chrome, Brave, Edge, Arc, Vivaldi, and Chromium.
 
 To send text messages, milo needs [imsg](https://github.com/steipete/imsg),
-and your terminal app needs **Full Disk Access**.
+and Milo needs **Full Disk Access** in System Settings, under **Privacy &
+Security**.
 
 ## Memory
 
@@ -103,48 +109,17 @@ milo also keeps notes about each app and website that it has worked in, in
 
 ## Change the model
 
-The default model is `openai/gpt-6.2-sol`. milo supports the following
-providers:
-
-| Provider | Environment variable |
-|---|---|
-| `openai` | `OPENAI_API_KEY` |
-| `anthropic` | `ANTHROPIC_API_KEY` |
-| `google` | `GEMINI_API_KEY` |
-| `openrouter` | `OPENROUTER_API_KEY` |
-
-To use another model, name it when you start milo. milo asks for the API key
-of the provider the first time, unless its environment variable is set:
-
-```sh
-milo --model anthropic/MODEL_NAME
-```
-
-To list the models of a provider, run `milo models PROVIDER`. To replace or
-remove a saved key, run `milo auth PROVIDER`.
-
-To keep the choice, create `~/.config/milo/config.json`:
-
-```json
-{
-  "model": "anthropic/MODEL_NAME"
-}
-```
+The default model is `openai/gpt-6.2-sol`. In the settings, choose a provider,
+paste its API key, and choose a model. Milo supports OpenAI, Anthropic,
+Google, and OpenRouter.
 
 ## Change the voice
 
-To get a different voice, describe it:
+In the settings, describe the voice that you want, such as "A calm British
+woman with a low, slow, thoughtful voice."
 
-```sh
-milo --voice-design "A calm British woman with a low, slow, thoughtful voice."
-```
-
-To copy a voice, give a WAV recording of 3 to 12 seconds and the exact words
-that it contains:
-
-```sh
-milo --voice-ref RECORDING.wav --voice-text "The exact words in the recording."
-```
+To copy a voice, choose a WAV recording of 3 to 12 seconds, and type the
+exact words that it contains.
 
 ## Add your own tools
 
@@ -171,39 +146,39 @@ milo replaces each parameter name in braces, such as `{state}`, with its
 value, asks for your approval in the panel, and runs the command without a
 shell.
 
-## Options
-
-| Option | Description |
-|---|---|
-| `--model` | The model, as `PROVIDER/MODEL`. |
-| `--voice-design` | A description of the voice to create. |
-| `--voice-ref`, `--voice-text` | A WAV recording of a voice to copy, and its exact transcript. |
-| `--no-aec` | Turns off echo cancellation. Use it with headphones. |
-| `--push-to-talk` | Starts with your microphone muted. To talk, hold Control+Option+Space. |
-| `--dangerously-auto-approve` | Runs every command and plan without asking for approval. |
-| `--no-notch` | Turns off the panel. milo then can't use apps for you. |
-| `--no-tools` | Turns off tools and memory. |
-| `--input-device`, `--output-device` | The microphone or the speakers, by name. |
-| `--task`, `--step` | Carries out one task in your apps without the voice, and exits. |
-
-For every option, run `milo --help`.
-
 ## Troubleshooting
 
-- **milo doesn't hear you.** In System Settings, go to **Privacy & Security** >
-  **Microphone**, turn on access for your terminal app, and start milo again.
-- **milo says that Accessibility or Screen Recording is turned off.** Turn on
-  both for your terminal app, and start milo again.
+- **milo doesn't hear you.** In the settings, under **Permissions**, allow the
+  microphone, and start Milo again.
+- **milo says that Accessibility or Screen Recording is turned off.** Allow
+  both in the settings, and start Milo again.
 - **milo says that no browser allows remote debugging.** Turn it on at
-  `chrome://inspect/#remote-debugging`, and start milo again.
-- **Something else is wrong.** Run `RUST_LOG=debug milo` for more detail.
+  `chrome://inspect/#remote-debugging`, and start Milo again.
+- **Something else is wrong.** See `~/Library/Logs/Milo/milo.log`.
 
 ## Uninstall
 
+Move Milo from your Applications folder to the Trash, and then remove its
+files:
+
 ```sh
-cargo uninstall milo
-rm -rf ~/.cache/milo ~/.config/milo
+rm -rf ~/.cache/milo ~/.config/milo ~/Library/Logs/Milo
 ```
+
+## Build from source
+
+You need Xcode 26, or the Xcode Command Line Tools with Swift 6.2 or later.
+
+```sh
+git clone https://github.com/govindpuff/milo
+cd milo
+./setup.sh
+```
+
+The script installs the `milo` command, which runs milo in your terminal with
+the same settings. For its options, run `milo --help`. To build the app, run
+`scripts/bundle.sh`. To build a notarized `Milo.dmg`, run
+`scripts/release.sh`.
 
 ## How it works
 
