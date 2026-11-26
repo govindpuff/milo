@@ -781,6 +781,9 @@ async fn enter(s: &mut Session, what: &str) -> Result<String, String> {
             _ => None,
         };
         if let Some(tab) = shown.or(first) {
+            if web && s.mine.is_none() {
+                s.mine = Some(tab.clone());
+            }
             s.place = Place::Tab(tab);
         }
     }
