@@ -115,6 +115,7 @@ struct Seen {
     text: String,
     image: Option<String>,
     print: Vec<u8>,
+    web: bool,
 }
 
 impl Seen {
@@ -124,11 +125,12 @@ impl Seen {
             text: answer["text"].as_str().unwrap_or_default().to_string(),
             image: answer["image"].as_str().map(str::to_string),
             print: (0..print.len() / 2).filter_map(|i| u8::from_str_radix(&print[i * 2..i * 2 + 2], 16).ok()).collect(),
+            web: answer["web"] == true,
         }
     }
 
     fn plain(text: String) -> Seen {
-        Seen { text, image: None, print: Vec::new() }
+        Seen { text, image: None, print: Vec::new(), web: false }
     }
 
     fn same(&self, other: &Seen) -> bool {
@@ -398,7 +400,7 @@ async fn screen(s: &mut Session) -> Seen {
                     if let Some(bytes) = seen.image.as_ref().and_then(|image| STANDARD.decode(image).ok()) {
                         let _ = std::fs::write(path, bytes);
                     }
-                    Seen { text: seen.text, image: seen.image, print: Vec::new() }
+                    Seen { text: seen.text, image: seen.image, print: Vec::new(), web: false }
                 }
                 None => {
                     s.place = Place::None;
@@ -1016,7 +1018,7 @@ fn titled(seen: &Seen) -> Vec<&str> {
 
 fn show(seen: &Seen, pictured: bool) {
     let sparse = seen.text.lines().filter(|line| line.starts_with('[')).count() < SPARSE;
-    let image = seen.image.clone().filter(|_| pictured || sparse);
+    let image = seen.image.clone().filter(|_| pictured || sparse || seen.web);
     *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((squeeze(&seen.text), image));
 }
 
@@ -1183,7 +1185,7 @@ pub async fn see() -> Result<String> {
     let seen = match (tab, &s.browser) {
         (Some(tab), Some(browser)) => {
             let seen = browser.look(&tab).await?;
-            Seen { text: seen.text, image: seen.image, print: Vec::new() }
+            Seen { text: seen.text, image: seen.image, print: Vec::new(), web: false }
         }
         _ => {
             let op = if hosting && s.place == Place::Window { "look" } else { "peek" };

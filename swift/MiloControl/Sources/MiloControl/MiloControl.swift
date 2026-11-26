@@ -652,7 +652,7 @@ func look(_ request: [String: Any]) throws -> [String: Any] {
         head += "\n" + walk.lines.joined(separator: "\n")
         if walk.cut { head += "\n(there is more in this window than is listed)" }
     }
-    var out: [String: Any] = ["text": head, "print": print(image)]
+    var out: [String: Any] = ["text": head, "print": print(image), "web": web != nil]
     if let data = render(image) {
         out["image"] = data.base64EncodedString()
         if let save = request["save"] as? String { try? data.write(to: URL(fileURLWithPath: save)) }
