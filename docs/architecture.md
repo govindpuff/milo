@@ -102,7 +102,8 @@ system prompt.
 ## Computer use
 
 The `computer` tool takes a task name and a list of steps, and the panel
-shows them as one card. One approval covers the whole plan. The model then
+shows them as one card. One approval covers the whole plan. The call can
+also name the app or the website to open first, which saves a round. The model then
 carries out the plan with the tools `go`, `click`, `type`, `press`, `scroll`,
 `read`, `menu`, `look`, `tab`, and `close_tab`, one call in each round.
 

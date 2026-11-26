@@ -171,6 +171,10 @@ impl Tools {
                         "items": { "type": "string" },
                         "description": "The plan, as one to six short steps in order, like Go to mail.google.com. Each step names the app, the site or the tab it is about, and the exact words to type, taken from what they said. Never make up words to type.",
                     },
+                    "open": {
+                        "type": "string",
+                        "description": "The app or the web address the plan starts in, like Notes or mail.google.com, when it is not open yet. It is opened at once, the way go opens it, so your next action is already in it. Leave it out when the plan is about something that is already open, or when you can't tell where to start.",
+                    },
                     "show": {
                         "type": "boolean",
                         "description": "True only when they asked to see, watch or be shown it, like play a video or pull up a page. Then it is brought to the front of their screen when you are done. Leave it out when they just want something done.",
@@ -467,7 +471,13 @@ impl Tools {
                 _ => return Err(Skipped.into()),
             }
         }
-        computer::begin(&self.events, &task, &steps, show).await
+        let lead = computer::begin(&self.events, &task, &steps, show).await?;
+        let Some(what) = text(args, "open") else { return Ok(lead) };
+        let mut first = Map::new();
+        first.insert("what".to_string(), what.into());
+        let did =
+            computer::perform(&self.vision, Call { id: String::new(), name: "go".to_string(), args: first }).await;
+        Ok(format!("{lead}\n\n{did}"))
     }
 
     fn timer(&self, args: &Map<String, Value>) -> Result<String> {
