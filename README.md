@@ -24,6 +24,7 @@ remember what you tell it.
 
     - Your OpenAI API key
     - Access to the microphone, Accessibility, and Screen Recording
+    - Optionally, Full Disk Access, which Milo needs to send text messages
     - The voice that you want
 
     Milo doesn't listen until you finish the setup.
@@ -102,8 +103,8 @@ milo opens websites in a browser window of its own and leaves your tabs as
 they are. This works in Chrome, Brave, Edge, Arc, Vivaldi, and Chromium.
 
 To send text messages, milo needs [imsg](https://github.com/steipete/imsg),
-and Milo needs **Full Disk Access** in System Settings, under **Privacy &
-Security**.
+and Milo needs **Full Disk Access**. To allow it, open the settings, and
+under **Permissions**, click **Allow** next to **Full Disk Access**.
 
 ## Memory
 

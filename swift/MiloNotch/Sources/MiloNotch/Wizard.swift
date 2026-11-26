@@ -56,6 +56,7 @@ extension Access {
         case .microphone: "mic.fill"
         case .accessibility: "cursorarrow.click.2"
         case .screen: "rectangle.on.rectangle"
+        case .disk: "internaldrive.fill"
         }
     }
 }
@@ -353,10 +354,10 @@ struct Wizard: View {
 
     @ViewBuilder var access: some View {
         VStack(spacing: 22) {
-            Heading(title: "Give Milo access", detail: "Milo needs these three to hear you and to use your apps for you.")
+            Heading(title: "Give Milo access", detail: "Milo needs the first three to hear you and to use your apps for you. Full Disk Access is only for text messages.")
             VStack(spacing: 10) {
                 ForEach(Access.allCases) { access in
-                    let waits = access == .screen && grants.asked.contains(access)
+                    let waits = access.restarts && grants.asked.contains(access)
                     Line(
                         icon: access.icon,
                         title: access.title,

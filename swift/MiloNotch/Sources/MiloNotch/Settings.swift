@@ -113,6 +113,9 @@ enum Access: CaseIterable, Identifiable {
     case microphone
     case accessibility
     case screen
+    case disk
+
+    static let needed: [Access] = [.microphone, .accessibility, .screen]
 
     var id: Self { self }
 
@@ -121,6 +124,7 @@ enum Access: CaseIterable, Identifiable {
         case .microphone: "Microphone"
         case .accessibility: "Accessibility"
         case .screen: "Screen Recording"
+        case .disk: "Full Disk Access"
         }
     }
 
@@ -129,6 +133,7 @@ enum Access: CaseIterable, Identifiable {
         case .microphone: "Milo hears you."
         case .accessibility: "Milo clicks and types in your apps."
         case .screen: "Milo sees the windows that it works in."
+        case .disk: "Optional. Milo sends text messages for you."
         }
     }
 
@@ -137,14 +142,19 @@ enum Access: CaseIterable, Identifiable {
         case .microphone: "Privacy_Microphone"
         case .accessibility: "Privacy_Accessibility"
         case .screen: "Privacy_ScreenCapture"
+        case .disk: "Privacy_AllFiles"
         }
     }
+
+    var restarts: Bool { self == .screen || self == .disk }
 
     var granted: Bool {
         switch self {
         case .microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .accessibility: AXIsProcessTrusted()
         case .screen: CGPreflightScreenCaptureAccess()
+        case .disk:
+            FileHandle(forReadingAtPath: NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db") != nil
         }
     }
 
@@ -160,6 +170,8 @@ enum Access: CaseIterable, Identifiable {
             return
         case .screen:
             if CGRequestScreenCaptureAccess() { return }
+        case .disk:
+            break
         }
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
             NSWorkspace.shared.open(url)
@@ -182,7 +194,7 @@ final class Grants: ObservableObject {
         self.clock = clock
     }
 
-    var all: Bool { Access.allCases.allSatisfy { granted[$0] == true } }
+    var all: Bool { Access.needed.allSatisfy { granted[$0] == true } }
 
     func refresh() {
         let now = Dictionary(uniqueKeysWithValues: Access.allCases.map { ($0, $0.granted) })
@@ -201,7 +213,7 @@ struct Permissions: View {
 
     var body: some View {
         ForEach(Access.allCases) { access in
-            let waits = access == .screen && grants.asked.contains(access)
+            let waits = access.restarts && grants.asked.contains(access)
             LabeledContent {
                 if grants.granted[access] == true {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
