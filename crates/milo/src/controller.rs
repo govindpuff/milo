@@ -34,6 +34,8 @@ const TOKEN_SLACK: Duration = Duration::from_millis(1500);
 const LATE_WORDS: Duration = Duration::from_secs(1);
 const REFINE_WAIT: Duration = Duration::from_millis(450);
 const TRAIL: Duration = Duration::from_millis(100);
+const TAIL: Duration = Duration::from_millis(400);
+const ECHO_WORDS: usize = 3;
 const POLL: Duration = Duration::from_millis(5);
 const IDLE: Duration = Duration::from_secs(3600);
 const HISTORY_MAX: usize = 80;
@@ -213,6 +215,9 @@ pub struct Controller {
     voice_start: Option<Instant>,
     carry: Option<String>,
     stream_words: Vec<String>,
+    echo: Vec<String>,
+    leaked: bool,
+    faded: Option<Instant>,
     gaps: (u64, u64),
     asides: VecDeque<String>,
     next_id: u64,
@@ -259,6 +264,9 @@ impl Controller {
             voice_start: None,
             carry: None,
             stream_words: Vec::new(),
+            echo: Vec::new(),
+            leaked: false,
+            faded: None,
             gaps: (0, 0),
             asides: VecDeque::new(),
             next_id: 0,
@@ -293,7 +301,7 @@ impl Controller {
             Some(_) => Instant::now() + POLL,
             None => match &self.heard {
                 Some(h) if !h.words.is_empty() => h.at + SPECULATE,
-                _ if !self.asides.is_empty() => Instant::now() + POLL,
+                _ if !self.asides.is_empty() || self.leaked => Instant::now() + POLL,
                 _ => Instant::now() + IDLE,
             },
         }
@@ -316,7 +324,37 @@ impl Controller {
         self.maybe_react(now);
         self.maybe_aside();
         self.poll_onset();
+        self.fade(now);
         self.check_end();
+    }
+
+    fn fade(&mut self, now: Instant) {
+        if self.playback.queued_ms() > 0 {
+            self.leaked |= self.turn.as_ref().is_some_and(|t| t.committed);
+            self.faded = None;
+            return;
+        }
+        if !self.leaked {
+            return;
+        }
+        let at = *self.faded.get_or_insert(now);
+        let silent = self.voice_start.is_none() && self.heard.as_ref().is_none_or(|h| h.words.is_empty());
+        if silent && now >= at + TAIL {
+            self.voice_reset.reset();
+            self.leaked = false;
+            self.faded = None;
+        }
+    }
+
+    fn echoed(&self, words: &[String]) -> usize {
+        if self.leaked { overlap(words, &self.echo) } else { 0 }
+    }
+
+    fn unechoed(&self, text: String) -> String {
+        match self.echoed(&content_words(&text)) {
+            0 => text,
+            count => after(&text, count).to_string(),
+        }
     }
 
     fn quiet(&self) -> bool {
@@ -622,7 +660,7 @@ impl Controller {
                 if let Some(v) = &mut self.verdict {
                     v.refining = false;
                 }
-                match text.filter(|t| !content_words(t).is_empty()) {
+                match text.map(|t| self.unechoed(t)).filter(|t| !content_words(t).is_empty()) {
                     Some(text) => self.refine(text),
                     None => {
                         self.silent_seq = Some(seq);
@@ -711,11 +749,14 @@ impl Controller {
     fn on_partial(&mut self, text: String, speech_end_ms: Option<u64>, at: Instant) {
         log::debug!("partial: {text}");
         self.check_end();
+        let raw = content_words(&text);
+        let text = self.unechoed(text);
         let words = content_words(&text);
-        self.stream_words = words.clone();
+        self.stream_words = raw.clone();
         match &self.turn {
             Some(t) if t.committed => {
-                let fresh = fresh_words(&words, &t.base);
+                let fresh = fresh_words(&raw, &t.base);
+                let fresh = &fresh[self.echoed(fresh)..];
                 let few = fresh.len() < BARGE_WORDS;
                 if fresh.is_empty() || is_backchannel(fresh) || (few && at < t.decided + LATE_WORDS) {
                     return;
@@ -731,6 +772,9 @@ impl Controller {
             }
             _ => {}
         }
+        if words.is_empty() && !raw.is_empty() {
+            return;
+        }
         if self.turn.as_ref().is_none_or(|t| !t.committed) {
             self.draw_ghost(&text);
         }
@@ -740,6 +784,8 @@ impl Controller {
     fn on_eou(&mut self, text: String, speech_end_ms: Option<u64>, at: Instant) {
         log::debug!("eou: {text} (speech end {speech_end_ms:?} ms)");
         self.check_end();
+        let raw = content_words(&text);
+        let text = self.unechoed(text);
         let words = content_words(&text);
         let speech_end = speech_end_ms.and_then(|ms| self.clock.wall(ms));
         if words.is_empty() {
@@ -753,9 +799,11 @@ impl Controller {
             return;
         }
         let refined = self.heard.as_ref().is_some_and(|h| h.refined);
+        let echoed = self.turn.as_ref().filter(|t| t.committed).map_or(0, |t| self.echoed(fresh_words(&raw, &t.base)));
         match self.turn.as_mut() {
             Some(t) if t.committed => {
-                let fresh = fresh_words(&words, &t.base);
+                let fresh = fresh_words(&raw, &t.base);
+                let fresh = &fresh[echoed..];
                 let few = fresh.len() < BARGE_WORDS;
                 if fresh.is_empty() || is_backchannel(fresh) || (few && at < t.decided + LATE_WORDS) {
                     self.speech.rearm(false);
@@ -876,6 +924,9 @@ impl Controller {
         self.heard = None;
         self.verdict = None;
         self.voice_reset.reset();
+        self.echo.clear();
+        self.leaked = false;
+        self.faded = None;
         self.carry = None;
         let quiet = self.last_react.is_some_and(|(at, _)| at.elapsed() < OPENER_QUIET);
         let Some(t) = self.turn.as_mut() else { return };
@@ -903,6 +954,7 @@ impl Controller {
             println!("you: {}", t.text);
         }
         if !t.held_chunks.is_empty() {
+            self.echo.extend(t.held_chunks.iter().flat_map(|chunk| content_words(chunk)));
             print!("{}{}", milo_label(t.mood.as_deref(), self.dim), t.held_chunks.join(" "));
             t.held_chunks.clear();
             t.line = Line::Open;
@@ -931,6 +983,7 @@ impl Controller {
         }
         t.line = Line::Open;
         flush();
+        self.echo.extend(content_words(&text));
     }
 
     fn on_opener(&mut self, id: u64, key: usize, text: String) {
@@ -1176,6 +1229,41 @@ fn milo_label(mood: Option<&str>, dim: bool) -> String {
 
 fn fresh_words<'a>(words: &'a [String], base: &[String]) -> &'a [String] {
     if words.starts_with(base) { &words[base.len()..] } else { words }
+}
+
+fn overlap(heard: &[String], said: &[String]) -> usize {
+    let mut back = vec![0usize; said.len() + 1];
+    let mut row = back.clone();
+    let mut best = 0;
+    for (i, word) in heard.iter().enumerate() {
+        let mut next = vec![i + 1; said.len() + 1];
+        let mut ends = None;
+        for (j, own) in said.iter().enumerate() {
+            let same = word == own;
+            next[j + 1] = (row[j] + usize::from(!same)).min(row[j + 1] + 1).min(next[j] + 1);
+            if same && i > 0 && j > 0 && heard[i - 1] == said[j - 1] {
+                ends = Some(ends.map_or(back[j - 1], |cost: usize| cost.min(back[j - 1])));
+            }
+        }
+        if i + 1 >= ECHO_WORDS && ends.is_some_and(|cost| cost * 4 <= i + 1) {
+            best = i + 1;
+        }
+        back = std::mem::replace(&mut row, next);
+    }
+    best
+}
+
+fn after(text: &str, count: usize) -> &str {
+    let mut rest = text.trim_start();
+    let mut left = count;
+    while left > 0 && !rest.is_empty() {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        if !content_words(&rest[..end]).is_empty() {
+            left -= 1;
+        }
+        rest = rest[end..].trim_start();
+    }
+    rest
 }
 
 fn is_backchannel(words: &[String]) -> bool {
