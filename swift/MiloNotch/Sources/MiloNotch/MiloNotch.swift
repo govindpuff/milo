@@ -156,6 +156,27 @@ struct Bars: View {
     }
 }
 
+struct Loading: View {
+    let height: CGFloat
+    let flipped: Bool
+
+    var body: some View {
+        TimelineView(.animation) { time in
+            let now = time.date.timeIntervalSinceReferenceDate
+            HStack(spacing: Size.gap) {
+                ForEach(0..<Size.bars, id: \.self) { i in
+                    let at = Double(flipped ? Size.bars - 1 - i : i)
+                    let level = (sin(now * 4 - at * 0.7) + 1) / 2
+                    Capsule()
+                        .fill(Color.white.opacity(0.2 + 0.5 * level))
+                        .frame(width: Size.bar, height: Size.bar + level * 0.45 * (height - Size.bar))
+                }
+            }
+            .frame(height: height)
+        }
+    }
+}
+
 struct Ears: View {
     @ObservedObject var wave: Wave
     let state: String
@@ -166,7 +187,9 @@ struct Ears: View {
         let height = max(notch.height - 16, Size.bar)
         HStack(spacing: 0) {
             Group {
-                if muted {
+                if state == "starting" {
+                    Loading(height: height, flipped: true)
+                } else if muted {
                     Image(systemName: "mic.slash.fill").font(.system(size: 12)).foregroundStyle(.red)
                 } else {
                     Bars(levels: wave.me, color: .white, height: height)
@@ -174,8 +197,14 @@ struct Ears: View {
             }
             .frame(width: Size.ear)
             Spacer(minLength: 0)
-            Bars(levels: wave.milo.reversed(), color: state == "working" ? .orange : .cyan, height: height)
-                .frame(width: Size.ear)
+            Group {
+                if state == "starting" {
+                    Loading(height: height, flipped: false)
+                } else {
+                    Bars(levels: wave.milo.reversed(), color: state == "working" ? .orange : .cyan, height: height)
+                }
+            }
+            .frame(width: Size.ear)
         }
         .frame(width: notch.width + 2 * Size.ear, height: notch.height)
     }
@@ -254,6 +283,18 @@ struct NotchView: View {
                 Group {
                     if let card = model.cards.first {
                         CardView(card: card, waiting: model.cards.count - 1, choose: model.choose)
+                    } else if model.state == "starting" {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Milo").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                                Spacer()
+                                Text("Starting").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+                                ProgressView().controlSize(.small).colorScheme(.dark).frame(width: 28, height: 28)
+                            }
+                            Text("Milo is loading its voice and can't hear you yet.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
                     } else {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
