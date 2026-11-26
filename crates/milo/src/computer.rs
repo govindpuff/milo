@@ -25,6 +25,7 @@ const LOADED: Duration = Duration::from_secs(12);
 const SCREEN: &str = "What is there now, as a list:\n";
 const PICTURED: &str = "What is there now, as a picture and as a list:\n";
 const SPARSE: usize = 5;
+const REFUSALS: usize = 2;
 const NAMED: usize = 24;
 const NEAR: usize = 4;
 const STOP: &str = "stop";
@@ -76,6 +77,7 @@ static SESSION: tokio::sync::Mutex<Session> = tokio::sync::Mutex::const_new(Sess
     mine: None,
     tabs: Vec::new(),
     warned: false,
+    refused: 0,
     lent: None,
     trail: Vec::new(),
     task: None,
@@ -95,6 +97,7 @@ struct Session {
     mine: Option<String>,
     tabs: Vec<String>,
     warned: bool,
+    refused: usize,
     lent: Option<String>,
     trail: Vec<skills::Step>,
     task: Option<Task>,
@@ -284,6 +287,9 @@ async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
         return;
     }
     s.browser = None;
+    if s.refused >= REFUSALS {
+        return;
+    }
     let Some(name) = browser::found() else {
         if !s.warned {
             log::warn!("{OFF}");
@@ -316,9 +322,14 @@ async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
     match got {
         Ok(browser) => {
             log::info!("connected to {}", browser.name());
+            s.refused = 0;
             s.browser = Some(browser);
         }
-        Err(e) => log::warn!("the browser could not be reached, so websites are read off the screen instead: {e:#}"),
+        Err(e) => {
+            s.refused += 1;
+            let after = if s.refused >= REFUSALS { ", and milo will not ask again until it starts again" } else { "" };
+            log::warn!("the browser could not be reached, so websites are read off the screen instead{after}: {e:#}");
+        }
     }
 }
 
