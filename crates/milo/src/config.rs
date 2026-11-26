@@ -12,6 +12,7 @@ pub const VOICE: &str = "A warm, friendly young American man with a natural, rel
 const SOUNDS: &str = "listening_sounds";
 const SETTINGS: &[&str] = &[
     "model",
+    "speed",
     "voice_design",
     "voice_ref",
     "voice_text",
@@ -296,6 +297,9 @@ impl Config {
         let mut options = set["options"].as_object().cloned().unwrap_or_default();
         let own = &set["models"][model];
         options.extend(own["options"].as_object().cloned().unwrap_or_default());
+        if let Some(speed) = self.named("speed").filter(|_| id == "openai") {
+            options.insert("service_tier".to_string(), speed.into());
+        }
         let limit = set["limit"].as_str().or(known.and_then(|known| known.limit)).map(str::to_string);
         let rapid = id == LOCAL;
         let number = |key: &str| own["price"][key].as_f64();

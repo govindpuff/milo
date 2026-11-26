@@ -71,6 +71,7 @@ To open the settings, click the **m** in the menu bar, and then click
 **Settings**. You can change the following:
 
 - The API key and the model
+- **Speed**, which selects a faster OpenAI service tier at a higher price
 - The voice
 - The microphone and the speakers
 - **Headphones**, which turns off echo cancellation

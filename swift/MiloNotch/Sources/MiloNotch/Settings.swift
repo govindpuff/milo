@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 
 struct Prefs: Codable, Equatable {
     var model = ""
+    var speed = ""
     var voiceDesign = ""
     var voiceRef = ""
     var voiceText = ""
@@ -307,6 +308,13 @@ struct SettingsView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled((desk.models[id] ?? []).isEmpty)
+            }
+            if id == "openai" {
+                Picker("Speed", selection: $desk.draft.speed) {
+                    Text("Standard").tag("")
+                    Text("Priority").tag("priority")
+                    Text("Ultrafast").tag("ultrafast")
+                }
             }
         }
     }
