@@ -579,6 +579,9 @@ async fn imsg(args: &[&str]) -> Result<String> {
     if !out.status.success() {
         let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let said = if said.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { said };
+        if said.contains("authorization denied") {
+            bail!("nothing was sent: {NO_CHATS}");
+        }
         bail!("nothing was sent: imsg failed: {}", clip(&said));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
