@@ -122,12 +122,15 @@ about each place that the task worked in.
 
 ### Browser tabs
 
-`crates/browser` connects to a running Chromium browser over remote
-debugging. `page.js` runs in the tab and lists the controls in the viewport.
-Clicks, text, and keys go through the DevTools Protocol, so the tab doesn't
-have to be in front. milo opens websites in one window of its own, behind
-your windows. If a tab already has the exact address open, milo works in
-that tab.
+`crates/browser` starts a second copy of an installed Chromium browser with
+its own profile and a remote debugging port, and connects to it. The browser
+doesn't ask for permission, because the profile isn't your default one.
+`page.js` runs in the tab and lists the controls in the viewport. Clicks,
+text, and keys go through the DevTools Protocol, so the tab doesn't have to
+be in front. milo opens websites in one window, behind your windows. If one
+of its tabs already has the exact address open, milo works in that tab.
+
+When milo quits, it also quits its browser if no tabs are open there.
 
 ### App windows
 
@@ -218,6 +221,7 @@ voice, or the audio devices stops the conversation and starts the app again.
 | `~/.cache/milo/` | The voice server's Python environment, designed voices, reaction clips, and the turn models. |
 | `~/.cache/huggingface/hub/` | The voice models. |
 | `~/Library/Application Support/FluidAudio/Models/` | The speech recognition and echo removal models. |
+| `~/Library/Application Support/Milo/Browser/` | The profile of milo's own browser. |
 | `~/Library/Logs/Milo/milo.log` | The app's log. |
 | `$TMPDIR/milo-voice-PORT.log` | The voice server's log. |
 | `$TMPDIR/milo-computer/` | The picture, the list, and the action of each step of the last plan. |

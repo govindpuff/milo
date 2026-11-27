@@ -33,14 +33,11 @@ const NEAR: usize = 4;
 const STOP: &str = "stop";
 const MOVED: f64 = 0.8;
 const SPOT: u8 = 8;
-const ALLOW: Duration = Duration::from_secs(40);
-const ASKED: Duration = Duration::from_millis(1500);
-const PEEK: Duration = Duration::from_secs(5);
+const STARTED: Duration = Duration::from_secs(15);
 const FOLLOWED: Duration = Duration::from_secs(6);
 const WAITED: Duration = Duration::from_secs(1);
 pub const READ: &str = "the text of the page";
 pub const LEAD: &str = "You are working on their computer now, on the plan you gave for";
-const RETURNS: usize = 5;
 const LOGGED: usize = 400;
 const TABS: usize = 30;
 const SAME: &str = "Nothing on the screen changed, so that did nothing. Do not repeat it. Try a different way, like a key, a menu item or another control.";
@@ -67,9 +64,9 @@ const NOWHERE: &str = "You are not in any tab or window yet. Go to one with go";
 const LOST: &str = "The place you were in is gone.";
 const HOSTING: &str = " (Milo runs in this app)";
 const SPRUNG: &str = ". It opened in a new tab, and you are in that tab now";
-const UNLINKED: &str = "the browser's tabs cannot be reached; work in the browser's window with go, click and press";
-const OFF: &str = "no browser allows remote debugging, so websites are read off the screen, which is slower and less exact. To fix that, open chrome://inspect/#remote-debugging in the browser and turn on Allow remote debugging for this browser instance";
-const KNOCK: &str = "Connecting to the browser. If it asks whether to allow remote debugging, click Allow.";
+const UNLINKED: &str = "your own browser cannot be reached; work in a browser's window with go, click and press";
+const OFF: &str = "none of the browsers that milo can run is installed (Chrome, Brave, Edge, Vivaldi or Chromium), so websites are read off the screen, which is slower and less exact";
+const OWN: &str = " (your own browser, where websites open)";
 
 static CURRENT: AtomicU64 = AtomicU64::new(0);
 static BLIND: AtomicBool = AtomicBool::new(false);
@@ -106,7 +103,7 @@ struct Session {
     tabs: Vec<String>,
     warned: bool,
     refused: usize,
-    lent: Option<String>,
+    lent: Option<i64>,
     trail: Vec<skills::Step>,
     task: Option<Task>,
     seen: Option<Seen>,
@@ -274,10 +271,14 @@ fn site(address: &str) -> &str {
     host.strip_prefix("www.").unwrap_or(host)
 }
 
-async fn front() -> Option<String> {
+async fn front() -> Option<(i64, String)> {
     let apps = control(json!({ "op": "around" })).await.ok()?;
     let front = apps["apps"].as_array()?.iter().find(|app| app["front"] == true)?;
-    front["name"].as_str().map(str::to_string)
+    Some((front["pid"].as_i64()?, front["name"].as_str().unwrap_or_default().to_string()))
+}
+
+async fn forward(pid: i64) {
+    let _ = act(json!({ "op": "front", "pid": pid })).await;
 }
 
 async fn here(s: &Session) -> String {
@@ -292,7 +293,7 @@ async fn here(s: &Session) -> String {
     }
 }
 
-async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
+async fn link(s: &mut Session) {
     if s.browser.as_ref().is_some_and(Browser::alive) {
         return;
     }
@@ -300,45 +301,32 @@ async fn link(s: &mut Session, wait: Duration, id: Option<(u64, &str)>) {
     if s.refused >= REFUSALS {
         return;
     }
-    let Some(name) = browser::found() else {
+    if browser::found().is_none() {
         if !s.warned {
             log::warn!("{OFF}");
             s.warned = true;
         }
         return;
-    };
-    if let Some((id, task)) = id {
-        notch::revise(id, &card(task, KNOCK));
     }
-    let back = front().await.filter(|front| *front != name);
-    let connect = Browser::connect(wait);
-    tokio::pin!(connect);
-    let got = tokio::select! {
-        got = &mut connect => got,
-        _ = tokio::time::sleep(ASKED) => {
-            log::info!("{name} is asking whether to allow remote debugging: click Allow there");
-            let _ = tools::launch(&name, false).await;
-            connect.await
-        }
-    };
-    if let Some(back) = back {
-        for _ in 0..RETURNS {
-            tokio::time::sleep(STILL).await;
-            if front().await.as_deref() != Some(back.as_str()) {
-                let _ = tools::launch(&back, false).await;
-            }
-        }
+    let back = front().await;
+    let got = Browser::connect(STARTED).await;
+    if let Some((back, _)) = back
+        && front().await.is_some_and(|(ahead, _)| ahead != back)
+    {
+        forward(back).await;
     }
     match got {
         Ok(browser) => {
-            log::info!("connected to {}", browser.name());
+            log::info!("milo's own browser is {}", browser.name());
             s.refused = 0;
             s.browser = Some(browser);
         }
         Err(e) => {
             s.refused += 1;
-            let after = if s.refused >= REFUSALS { ", and milo will not ask again until it starts again" } else { "" };
-            log::warn!("the browser could not be reached, so websites are read off the screen instead{after}: {e:#}");
+            let after = if s.refused >= REFUSALS { ", and milo will not try again until it starts again" } else { "" };
+            log::warn!(
+                "milo's own browser could not be started, so websites are read off the screen instead{after}: {e:#}"
+            );
         }
     }
 }
@@ -349,7 +337,9 @@ async fn facing(s: &Session) -> (Vec<Value>, Option<String>) {
         Err(_) => Vec::new(),
     };
     let Some(browser) = &s.browser else { return (apps, None) };
-    let title = apps.iter().find(|app| app["name"] == browser.name()).and_then(|app| app["title"].as_str());
+    let own = browser.pid();
+    let title =
+        apps.iter().find(|app| own.is_some() && app["pid"].as_i64() == own).and_then(|app| app["title"].as_str());
     let Some(title) = title.filter(|title| !title.is_empty()) else { return (apps, None) };
     let tabs = browser.tabs().await.unwrap_or_default();
     let shown = tabs
@@ -370,6 +360,9 @@ async fn around(s: &mut Session) -> String {
         if app["host"] == true {
             out.push_str(HOSTING);
         }
+        if s.browser.as_ref().is_some_and(|browser| browser.pid().is_some() && browser.pid() == app["pid"].as_i64()) {
+            out.push_str(OWN);
+        }
         if s.place == Place::Window && app["aimed"] == true {
             out.push_str(" (you are here)");
         }
@@ -381,7 +374,7 @@ async fn around(s: &mut Session) -> String {
             s.tabs.push(tab.id.clone());
         }
     }
-    out.push_str(&format!("\nTabs open in {}:", browser.name()));
+    out.push_str("\nTabs open in your own browser:");
     let mut any = 0;
     for (at, id) in s.tabs.iter().enumerate() {
         let Some(tab) = tabs.iter().find(|tab| tab.id == *id) else { continue };
@@ -393,7 +386,7 @@ async fn around(s: &mut Session) -> String {
         let title = if tab.title.is_empty() { "untitled" } else { tab.title.as_str() };
         out.push_str(&format!("\n- tab {}: {}, {}", at + 1, tools::clip(title), site(&tab.url)));
         if shown.as_deref() == Some(id.as_str()) {
-            out.push_str(" (showing in the browser's front window)");
+            out.push_str(" (showing in its front window)");
         }
         if s.mine.as_deref() == Some(id.as_str()) {
             out.push_str(" (in the window you opened)");
@@ -761,9 +754,9 @@ async fn launch(s: &mut Session, what: &str, web: bool) -> Result<String, String
     s.place = match act(json!({ "op": "start" })).await {
         Ok(name) if !name.is_empty() => {
             let ahead = front().await;
-            if ahead.as_deref() != Some(name.as_str()) {
+            if ahead.as_ref().is_none_or(|(_, ahead)| *ahead != name) {
                 if s.lent.is_none() {
-                    s.lent = ahead;
+                    s.lent = ahead.map(|(pid, _)| pid);
                 }
                 let _ = act(json!({ "op": "raise" })).await;
             }
@@ -786,34 +779,12 @@ async fn launch(s: &mut Session, what: &str, web: bool) -> Result<String, String
 async fn enter(s: &mut Session, what: &str) -> Result<String, String> {
     let web = what.contains("://") || (what.contains('.') && !what.contains(' '));
     if web {
-        link(s, PEEK, None).await;
+        link(s).await;
         if s.browser.is_some() {
             return visit(s, what).await.map_err(|e| format!("{e:#}"));
         }
     }
-    let did = launch(s, what, web).await;
-    if did.is_err() || s.place != Place::Window {
-        return did;
-    }
-    if web {
-        link(s, PEEK, None).await;
-    }
-    let named = s.browser.as_ref().map(|browser| browser.name().to_lowercase());
-    let lower = what.to_lowercase();
-    if web || named.is_some_and(|name| name.contains(&lower) || lower.contains(&name)) {
-        let (_, shown) = facing(s).await;
-        let first = match (&shown, &s.browser) {
-            (None, Some(browser)) => browser.tabs().await.ok().and_then(|tabs| tabs.first().map(|tab| tab.id.clone())),
-            _ => None,
-        };
-        if let Some(tab) = shown.or(first) {
-            if web && s.mine.is_none() {
-                s.mine = Some(tab.clone());
-            }
-            s.place = Place::Tab(tab);
-        }
-    }
-    did
+    launch(s, what, web).await
 }
 
 async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String, Seen, bool) {
@@ -967,7 +938,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
     let mut did = match did {
         Ok(text) if !quiet && s.place == Place::Window && place == Place::Window && after.same(before) => {
             if s.lent.is_none() {
-                s.lent = front().await;
+                s.lent = front().await.map(|(pid, _)| pid);
             }
             let _ = act(json!({ "op": "raise" })).await;
             settle(s, None, SETTLED).await;
@@ -1099,7 +1070,7 @@ pub async fn begin(events: &UnboundedSender<Event>, task: &str, steps: &[String]
             let _ = events.send(Event::Halt);
         }
     });
-    link(s, ALLOW, Some((id, task))).await;
+    link(s).await;
     arrive(s).await;
     let mut lead = format!("{LEAD} {task}. {PACE}");
     let before = screen(s).await;
@@ -1227,11 +1198,11 @@ pub async fn see() -> Result<String> {
         s.seen = Some(now);
         return Ok("The place you are working in is shown below again".to_string());
     }
-    link(s, PEEK, None).await;
     let (apps, shown) = facing(s).await;
     let front = apps.iter().find(|app| app["front"] == true);
     let hosting = front.is_some_and(|app| app["host"] == true);
-    let browsing = front.is_some_and(|app| s.browser.as_ref().is_some_and(|browser| app["name"] == browser.name()));
+    let own = s.browser.as_ref().and_then(Browser::pid);
+    let browsing = front.is_some_and(|app| own.is_some() && app["pid"].as_i64() == own);
     let tab = match (&s.place, shown) {
         (Place::Tab(tab), _) if hosting => Some(tab.clone()),
         (_, Some(tab)) if browsing => Some(tab),
@@ -1266,7 +1237,9 @@ async fn end(llm: Llm, id: u64, ended: String, done: bool) {
         match (&s.place, &s.browser) {
             (Place::Tab(tab), Some(browser)) => {
                 let _ = browser.show(tab).await;
-                let _ = tools::launch(browser.name(), false).await;
+                if let Some(pid) = browser.pid() {
+                    forward(pid).await;
+                }
                 s.lent = None;
             }
             (Place::Window, _) => {
@@ -1277,7 +1250,7 @@ async fn end(llm: Llm, id: u64, ended: String, done: bool) {
         }
     }
     if let Some(back) = s.lent.take() {
-        let _ = tools::launch(&back, false).await;
+        forward(back).await;
     }
     notch::dismiss(task.id);
     let trail = std::mem::take(&mut s.trail);
@@ -1301,14 +1274,22 @@ pub async fn finish(llm: &Llm, ended: &str, done: bool) {
     }
 }
 
+pub async fn quit() {
+    let leave = async {
+        if let Some(browser) = &SESSION.lock().await.browser {
+            browser.quit().await;
+        }
+    };
+    let _ = tokio::time::timeout(WAITED, leave).await;
+}
+
 pub async fn installed(app: &str) -> Option<String> {
     act(json!({ "op": "installed", "what": app })).await.ok()
 }
 
 pub async fn media(action: &str) -> Result<String> {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    link(s, PEEK, None).await;
+    let held = SESSION.lock().await;
+    let s = &*held;
     if let Some(browser) = &s.browser
         && (action == "pause" || action == "play")
     {
@@ -1331,8 +1312,7 @@ pub async fn media(action: &str) -> Result<String> {
 pub async fn pick(which: &str) -> Result<(String, String)> {
     let mut held = SESSION.lock().await;
     let s = &mut *held;
-    link(s, PEEK, None).await;
-    let Some(browser) = &s.browser else { bail!("{UNLINKED}") };
+    let Some(browser) = &s.browser else { bail!("you have no tabs open in your own browser") };
     let tabs = browser.tabs().await?;
     let (_, shown) = facing(s).await;
     let here = match &s.place {
@@ -1379,7 +1359,9 @@ pub async fn shut(tab: &str, show: bool) -> Result<()> {
     let Some(browser) = &s.browser else { bail!("{UNLINKED}") };
     if show {
         browser.show(tab).await?;
-        let _ = tools::launch(browser.name(), false).await;
+        if let Some(pid) = browser.pid() {
+            forward(pid).await;
+        }
         s.place = Place::Tab(tab.to_string());
         return Ok(());
     }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
@@ -12,15 +12,20 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 const PAGE: &str = include_str!("page.js");
-const HOMES: [(&str, &str); 7] = [
-    ("Google Chrome", "Google/Chrome"),
-    ("Brave Browser", "BraveSoftware/Brave-Browser"),
-    ("Microsoft Edge", "Microsoft Edge"),
-    ("Arc", "Arc/User Data"),
-    ("Vivaldi", "Vivaldi"),
-    ("Chromium", "Chromium"),
-    ("Google Chrome Beta", "Google/Chrome Beta"),
+const APPS: [&str; 6] =
+    ["Google Chrome", "Brave Browser", "Microsoft Edge", "Vivaldi", "Chromium", "Google Chrome Beta"];
+const FOLDER: &str = "Library/Application Support/Milo/Browser";
+const PORT: &str = "DevToolsActivePort";
+const FLAGS: [&str; 7] = [
+    "--remote-debugging-port=0",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--no-startup-window",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
 ];
+const STARTING: Duration = Duration::from_millis(150);
 const PROBE: Duration = Duration::from_millis(300);
 const ANSWER: Duration = Duration::from_secs(15);
 const SHOT: Duration = Duration::from_secs(4);
@@ -51,6 +56,7 @@ pub struct Seen {
 
 pub struct Browser {
     name: String,
+    pid: Option<i64>,
     out: mpsc::UnboundedSender<String>,
     waiting: Waiting,
     next: AtomicU64,
@@ -63,30 +69,51 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn homes() -> Vec<(String, u16, String)> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
-    let mut out = Vec::new();
-    for (name, folder) in HOMES {
-        let file = home.join("Library/Application Support").join(folder).join("DevToolsActivePort");
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
-        let mut lines = text.lines();
-        let port = lines.next().and_then(|line| line.trim().parse::<u16>().ok());
-        let path = lines.next().map(str::trim).unwrap_or_default();
-        if let Some(port) = port
-            && path.starts_with('/')
-        {
-            out.push((name.to_string(), port, path.to_string()));
-        }
-    }
-    out
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn open(port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), PROBE).is_ok()
+fn installed() -> Option<&'static str> {
+    let folders = [Some(PathBuf::from("/Applications")), home().map(|home| home.join("Applications"))];
+    APPS.into_iter().find(|name| folders.iter().flatten().any(|folder| folder.join(format!("{name}.app")).exists()))
+}
+
+fn listening(folder: &Path) -> Option<(u16, String)> {
+    let text = std::fs::read_to_string(folder.join(PORT)).ok()?;
+    let mut lines = text.lines();
+    let port = lines.next()?.trim().parse::<u16>().ok()?;
+    let path = lines.next().map(str::trim).filter(|path| path.starts_with('/'))?;
+    std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), PROBE).ok()?;
+    Some((port, path.to_string()))
 }
 
 pub fn found() -> Option<String> {
-    homes().into_iter().find(|(_, port, _)| open(*port)).map(|(name, _, _)| name)
+    installed().map(str::to_string)
+}
+
+async fn started(name: &str, folder: &Path, wait: Duration) -> Result<(u16, String)> {
+    if let Some(at) = listening(folder) {
+        return Ok(at);
+    }
+    std::fs::create_dir_all(folder)?;
+    let _ = std::fs::remove_file(folder.join(PORT));
+    let opened = tokio::process::Command::new("/usr/bin/open")
+        .args(["-n", "-g", "-a", name, "--args"])
+        .arg(format!("--user-data-dir={}", folder.display()))
+        .args(FLAGS)
+        .status()
+        .await?;
+    if !opened.success() {
+        bail!("{name} could not be started");
+    }
+    let until = tokio::time::Instant::now() + wait;
+    while tokio::time::Instant::now() < until {
+        tokio::time::sleep(STARTING).await;
+        if let Some(at) = listening(folder) {
+            return Ok(at);
+        }
+    }
+    bail!("{name} did not start in time")
 }
 
 struct Key {
@@ -130,13 +157,13 @@ fn key(name: &str) -> Option<Key> {
 
 impl Browser {
     pub async fn connect(wait: Duration) -> Result<Browser> {
-        let Some((name, port, path)) = homes().into_iter().find(|(_, port, _)| open(*port)) else {
-            bail!("no browser allows remote debugging");
-        };
+        let Some(name) = installed() else { bail!("no browser that milo can run is installed") };
+        let folder = home().ok_or_else(|| anyhow!("no home folder"))?.join(FOLDER);
+        let (port, path) = started(name, &folder, wait).await?;
         let address = format!("ws://127.0.0.1:{port}{path}");
         let (socket, _) = tokio::time::timeout(wait, tokio_tungstenite::connect_async(address))
             .await
-            .map_err(|_| anyhow!("{name} did not allow the connection in time"))??;
+            .map_err(|_| anyhow!("{name} did not answer in time"))??;
         let (mut sink, mut stream) = socket.split();
         let (out, mut queued) = mpsc::unbounded_channel::<String>();
         let waiting: Waiting = Arc::default();
@@ -183,7 +210,32 @@ impl Browser {
             alive.store(false, Relaxed);
             lock(&answers).clear();
         });
-        Ok(Browser { name, out, waiting, next: AtomicU64::new(1), live, sessions: Mutex::default(), notes })
+        let mut browser = Browser {
+            name: name.to_string(),
+            pid: None,
+            out,
+            waiting,
+            next: AtomicU64::new(1),
+            live,
+            sessions: Mutex::default(),
+            notes,
+        };
+        if let Ok(got) = browser.send("SystemInfo.getProcessInfo", json!({}), None).await {
+            let all = got["processInfo"].as_array().cloned().unwrap_or_default();
+            browser.pid =
+                all.iter().find(|process| process["type"] == "browser").and_then(|process| process["id"].as_i64());
+        }
+        Ok(browser)
+    }
+
+    pub fn pid(&self) -> Option<i64> {
+        self.pid
+    }
+
+    pub async fn quit(&self) {
+        if self.tabs().await.is_ok_and(|tabs| tabs.is_empty()) {
+            let _ = self.send("Browser.close", json!({}), None).await;
+        }
     }
 
     pub fn alive(&self) -> bool {

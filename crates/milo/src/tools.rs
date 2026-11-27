@@ -199,7 +199,7 @@ impl Tools {
             ));
             list.push(tool(
                 "close_tab",
-                "Close a tab in the person's browser.",
+                "Close a tab that you opened in your own browser.",
                 json!({
                     "which": { "type": "string", "description": "A word or two from the tab's title or address, like youtube. Leave it out when they say that tab, this tab or the tab, which means the one that was just worked in or that is showing." },
                     "number": { "type": "integer", "description": "While you work on their computer, the number of the tab in the list of open tabs, instead of which." },
@@ -209,7 +209,7 @@ impl Tools {
             ));
             list.push(tool(
                 "show_tab",
-                "Bring a tab that is already open in the person's browser to the front, for them to look at.",
+                "Bring a tab that you opened in your own browser to the front, for them to look at.",
                 json!({ "which": { "type": "string", "description": "A word or two from the tab's title or address, like gmail." } }),
                 &["which"],
                 Kind::ShowTab,

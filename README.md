@@ -89,18 +89,17 @@ milo can click, type, and press keys in your apps and on websites.
 
 1.  In the settings, under **Permissions**, allow **Accessibility** and
     **Screen Recording**.
-2.  In Chrome, go to `chrome://inspect/#remote-debugging`, and turn on
-    **Allow remote debugging for this browser instance**.
-3.  Start milo again. When Chrome asks whether to allow remote debugging,
-    click **Allow**.
-4.  Ask milo for something that takes a few steps, and approve the plan in
+2.  Ask milo for something that takes a few steps, and approve the plan in
     the panel.
 
 You can talk while milo works. To change the plan, say what you want
 instead. To stop it, say so, or click **Stop**.
 
-milo opens websites in a browser window of its own and leaves your tabs as
-they are. This works in Chrome, Brave, Edge, Arc, Vivaldi, and Chromium.
+milo opens websites in a browser of its own, which is a second copy of
+Chrome, Brave, Edge, Vivaldi, or Chromium with a separate profile. Your own
+browser and its tabs stay as they are. milo's browser starts signed out of
+every site. To let milo use a site that needs your account, sign in to the
+site once in milo's browser.
 
 To send text messages, milo needs [imsg](https://github.com/steipete/imsg),
 and Milo needs **Full Disk Access**. To allow it, open the settings, and
@@ -160,8 +159,8 @@ shell.
   microphone, and start Milo again.
 - **milo says that Accessibility or Screen Recording is turned off.** Allow
   both in the settings, and start Milo again.
-- **milo says that no browser allows remote debugging.** Turn it on at
-  `chrome://inspect/#remote-debugging`, and start Milo again.
+- **milo reads websites off the screen.** Install Chrome, Brave, Edge,
+  Vivaldi, or Chromium, and start Milo again.
 - **Something else is wrong.** See `~/Library/Logs/Milo/milo.log`.
 
 ## Uninstall
@@ -170,7 +169,8 @@ Move Milo from your Applications folder to the Trash, and then remove its
 files:
 
 ```sh
-rm -rf ~/.cache/milo ~/.config/milo ~/Library/Logs/Milo
+rm -rf ~/.cache/milo ~/.config/milo ~/Library/Logs/Milo \
+  ~/Library/Application\ Support/Milo
 ```
 
 ## Build from source

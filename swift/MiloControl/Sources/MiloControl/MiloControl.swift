@@ -222,6 +222,7 @@ func around() -> [String: Any] {
         if count == 0 && pid != ahead { continue }
         out.append([
             "name": running.localizedName ?? "",
+            "pid": Int(pid),
             "front": pid == ahead,
             "host": pid == home,
             "aimed": pid == aimed,
@@ -1204,6 +1205,10 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     case "around": return around()
     case "facing": return ["text": try facing()]
     case "raise": return ["text": try raise()]
+    case "front":
+        guard let pid = (request["pid"] as? NSNumber)?.int32Value else { throw Failure(text: "give the app") }
+        forward(pid)
+        return ["text": "brought it to the front"]
     case "media":
         let codes: [String: Int] = ["play": 16, "next": 17, "previous": 18]
         guard let code = codes[request["key"] as? String ?? ""] else { throw Failure(text: "there is no such key") }
