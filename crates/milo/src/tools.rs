@@ -475,6 +475,7 @@ impl Tools {
         let Some(what) = text(args, "open") else { return Ok(lead) };
         let mut first = Map::new();
         first.insert("what".to_string(), what.into());
+        computer::round();
         let did =
             computer::perform(&self.vision, Call { id: String::new(), name: "go".to_string(), args: first }).await;
         Ok(format!("{lead}\n\n{did}"))

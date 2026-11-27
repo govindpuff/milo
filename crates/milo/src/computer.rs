@@ -44,6 +44,7 @@ const RETURNS: usize = 5;
 const LOGGED: usize = 400;
 const TABS: usize = 30;
 const SAME: &str = "Nothing on the screen changed, so that did nothing. Do not repeat it. Try a different way, like a key, a menu item or another control.";
+const PACE: &str = "Carry it out an action at a time, and look at what each one did. To save time, when the next few actions are all on things you can see now and none of them needs the result of another, like filling in several fields, or pressing a key several times, call them together in one turn, in the order they should happen. An action that sends, buys, deletes or submits something always goes alone, after you have seen that everything before it is right.";
 const UNPLANNED: &str =
     "nothing was done: you are not working on their computer yet. Call computer first, with a short plan";
 const TIRED: &str = "nothing was done: this has taken too many actions. Stop here and tell them what got in the way";
@@ -58,6 +59,8 @@ const LOOPING: &str = " You have done exactly this before and ended up in the sa
 const LISTED: usize = 8;
 const WHY: &str = "Write this first. One or two short sentences: which place you are in and what it shows now, which step of the plan you are on, and why this action is the next one.";
 const GIVEN_UP: &str = " You have done this several times and ended up in the same place every time. Stop here and tell them what got in the way.";
+const SKIPPED: &str = "nothing was done: the action before this one did not work, so this one was not tried. Look at what is there now and choose again";
+const SHIFTED: &str = "nothing was done: the list changed after the action before this one, and that number is something else now. Use a number from the list below";
 const UNOPENED: &str = "no app has been opened yet";
 const UNSEEN: &str = "that could not be found in the picture; describe it another way, or use a number from the list";
 const NOWHERE: &str = "You are not in any tab or window yet. Go to one with go";
@@ -70,6 +73,7 @@ const KNOCK: &str = "Connecting to the browser. If it asks whether to allow remo
 
 static CURRENT: AtomicU64 = AtomicU64::new(0);
 static BLIND: AtomicBool = AtomicBool::new(false);
+static FRESH: AtomicBool = AtomicBool::new(true);
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 static SHOWN: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
 static SHOT: AtomicUsize = AtomicUsize::new(0);
@@ -84,6 +88,8 @@ static SESSION: tokio::sync::Mutex<Session> = tokio::sync::Mutex::const_new(Sess
     trail: Vec::new(),
     task: None,
     seen: None,
+    paced: None,
+    round: None,
 });
 
 #[derive(Clone, PartialEq)]
@@ -104,6 +110,8 @@ struct Session {
     trail: Vec<skills::Step>,
     task: Option<Task>,
     seen: Option<Seen>,
+    paced: Option<Instant>,
+    round: Option<(Seen, bool)>,
 }
 
 struct Task {
@@ -1093,7 +1101,7 @@ pub async fn begin(events: &UnboundedSender<Event>, task: &str, steps: &[String]
     });
     link(s, ALLOW, Some((id, task))).await;
     arrive(s).await;
-    let mut lead = format!("{LEAD} {task}. Carry it out one action at a time.");
+    let mut lead = format!("{LEAD} {task}. {PACE}");
     let before = screen(s).await;
     if s.place != Place::None {
         lead.push_str(&format!("\n\n{}", around(s).await));
@@ -1113,6 +1121,7 @@ pub async fn begin(events: &UnboundedSender<Event>, task: &str, steps: &[String]
     show(&before, true);
     s.seen = Some(before);
     s.task = Some(Task { id, name: task.to_string(), show: shown, steps: 0, done: HashMap::new(), briefed });
+    s.paced = Some(Instant::now());
     EPOCH.fetch_add(1, Relaxed);
     CURRENT.store(id, Relaxed);
     Ok(lead)
@@ -1141,7 +1150,25 @@ pub async fn perform(llm: &Llm, mut call: Call) -> String {
         Some(seen) => seen,
         None => screen(s).await,
     };
+    let began = Instant::now();
+    let thought = s.paced.map_or(0, |paced| began.duration_since(paced).as_millis());
+    if FRESH.swap(false, Relaxed) {
+        s.round = None;
+    }
+    let numbered = !["tab", "close_tab"].contains(&call.name.as_str());
+    let refused = match (&s.round, whole(&call.args).filter(|_| numbered)) {
+        (Some((_, false)), _) => Some(SKIPPED),
+        (Some((first, _)), Some(number)) if stem(&line(first, number)) != stem(&line(&before, number)) => Some(SHIFTED),
+        _ => None,
+    };
+    if let Some(refused) = refused {
+        s.round = Some((before, false));
+        return refused.to_string();
+    }
+    let first = s.round.take().map_or_else(|| before.clone(), |(first, _)| first);
     let (mut did, now, wasted) = step(llm, s, &call, &before).await;
+    s.round = Some((first, !wasted));
+    log::info!("{} took {} ms, {thought} ms after the step before it", call.name, began.elapsed().as_millis());
     let key = format!("{} {}", call.name, Value::Object(call.args.clone()));
     let place = here(s).await;
     let mut again = 0;
@@ -1171,7 +1198,12 @@ pub async fn perform(llm: &Llm, mut call: Call) -> String {
     notch::revise(id, &card(&name, brief(&did)));
     show(&now, wasted || call.name == "look" || did.contains(UNMOVED) || titled(&before) != titled(&now));
     s.seen = Some(now);
+    s.paced = Some(Instant::now());
     did
+}
+
+pub fn round() {
+    FRESH.store(true, Relaxed);
 }
 
 pub async fn refresh() {

@@ -105,7 +105,10 @@ The `computer` tool takes a task name and a list of steps, and the panel
 shows them as one card. One approval covers the whole plan. The call can
 also name the app or the website to open first, which saves a round. The model then
 carries out the plan with the tools `go`, `click`, `type`, `press`, `scroll`,
-`read`, `menu`, `look`, `tab`, and `close_tab`, one call in each round.
+`read`, `menu`, `look`, `tab`, and `close_tab`. A round can hold several
+calls when none of them needs the result of another. If one of them fails,
+or if it changes what a later call's number stands for, milo doesn't run the
+rest of the round.
 
 The model works in one *place* at a time: a browser tab, or the window of an
 app. Each request ends with a numbered list of the controls in the place, and

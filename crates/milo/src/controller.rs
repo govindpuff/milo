@@ -1285,6 +1285,7 @@ async fn act(
     events: UnboundedSender<Event>,
     listening: Arc<AtomicBool>,
 ) {
+    computer::round();
     for call in calls {
         let waited = Instant::now();
         let mut quiet = Instant::now();
