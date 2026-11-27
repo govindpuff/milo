@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use llm::{Call, Llm, Message, Role};
+use llm::{Call, Message, Role};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -15,6 +15,7 @@ use crate::controller::Event;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(45);
+const STARTED: &str = "started on it in the background. You are told when it is finished or when it needs them. Say in a few words that you are on it, and go on with the conversation";
 const ASKED: &str = "asked them to approve it on their screen. Nothing has happened yet: it runs if they approve, and you are told how it went";
 const RESULT_CHARS: usize = 700;
 const FILE_SHOWN: usize = 900;
@@ -31,7 +32,6 @@ const NO_IMSG: &str = "nothing was sent: the imsg command is not installed on th
 const MEMORY_LINES: usize = 60;
 const MAX_TIMER: f64 = 24.0 * 3600.0;
 const OLD: usize = 300;
-const ROUNDS: usize = 60;
 const SHOWN: usize = 300;
 
 pub fn unasked(on: bool) {
@@ -60,7 +60,7 @@ enum Kind {
     Remember,
     Forget,
     Computer,
-    Screen,
+    Task,
     Message,
     See,
     Write,
@@ -96,12 +96,11 @@ pub struct Tools {
     list: Vec<Tool>,
     http: reqwest::Client,
     events: UnboundedSender<Event>,
-    vision: Llm,
-    small: Llm,
+    minds: Arc<computer::Minds>,
 }
 
 impl Tools {
-    pub fn load(events: UnboundedSender<Event>, vision: Llm, small: Llm, hands: bool) -> Tools {
+    pub fn load(events: UnboundedSender<Event>, minds: Arc<computer::Minds>, hands: bool) -> Tools {
         let mut list = vec![
             tool(
                 "weather",
@@ -161,7 +160,7 @@ impl Tools {
         if hands {
             list.push(tool(
                 "computer",
-                "Start working on the person's computer for them, in its apps and its browser. Call it first, with a short plan, whenever what they ask takes more than the other tools do, like sending an email, writing a note in an app, searching a site, changing a setting, or reading something off a page. It answers with what is open on their Mac and what is on the screen. After that you carry out the plan yourself, one action at a time, with go, click, type, press, scroll, read, menu, look and tab. If they have not said something the task needs, like what an email should say or who it is for, ask them instead of calling this.",
+                "Start work on the person's computer, in their apps or in your own browser. It is carried out in the background, behind their windows, while you go on talking with them, and you are told how it went. Call it with a short plan whenever what they ask takes more than the other tools do, like sending an email, writing a note in an app, searching a site, changing a setting, or reading something off a page. The plan is all the work goes by, so it has to hold everything the work needs. If they have not said something the task needs, like what an email should say or who it is for, ask them instead of calling this.",
                 json!({
                     "task": {
                         "type": "string",
@@ -174,15 +173,30 @@ impl Tools {
                     },
                     "open": {
                         "type": "string",
-                        "description": "The app or the web address the plan starts in, like Notes or mail.google.com, when it is not open yet. It is opened at once, the way go opens it, so your next action is already in it. Leave it out when the plan is about something that is already open, or when you can't tell where to start.",
+                        "description": "The app or the web address the plan starts in, like Notes or mail.google.com, when it is not open yet. Leave it out when the plan is about something that is already open, or when you can't tell where to start.",
                     },
                     "show": {
                         "type": "boolean",
-                        "description": "True only when they asked to see, watch or be shown it, like play a video or pull up a page. Then it is brought to the front of their screen when you are done. Leave it out when they just want something done.",
+                        "description": "True only when they asked to see, watch or be shown it, like play a video or pull up a page. Then it is brought to the front of their screen when the work is done. Leave it out when they just want something done.",
                     },
                 }),
                 &["task", "steps"],
                 Kind::Computer,
+            ));
+            list.push(tool(
+                "task",
+                "Manage work that you started with computer and that is still under way: pass on what the person said about it, stop it, or bring it to the front of their screen. With the action show and nothing under way, it brings up what was worked in last.",
+                json!({
+                    "action": {
+                        "type": "string",
+                        "enum": ["tell", "stop", "show", "take"],
+                        "description": "tell passes on a change, a correction or an answer of theirs. stop ends the work. show brings it to the front for them to watch. take stops it and brings it to the front, for when they want to do the rest themselves.",
+                    },
+                    "which": { "type": "string", "description": "A word or two from the name of the work, when more than one is under way." },
+                    "text": { "type": "string", "description": "For tell: what they said, in their words, like Make the subject Lunch on Friday, or I have signed in." },
+                }),
+                &["action"],
+                Kind::Task,
             ));
             list.push(tool(
                 "see",
@@ -210,7 +224,6 @@ impl Tools {
                 "Close a tab that you opened in your own browser.",
                 json!({
                     "which": { "type": "string", "description": "A word or two from the tab's title or address, like youtube. Leave it out when they say that tab, this tab or the tab, which means the one that was just worked in or that is showing." },
-                    "number": { "type": "integer", "description": "While you work on their computer, the number of the tab in the list of open tabs, instead of which." },
                 }),
                 &[],
                 Kind::CloseTab,
@@ -243,15 +256,6 @@ impl Tools {
                 &["to", "text"],
                 Kind::Message,
             ));
-            for screen in computer::schema() {
-                let f = &screen["function"];
-                list.push(Tool {
-                    name: f["name"].as_str().unwrap_or_default().to_string(),
-                    description: f["description"].as_str().unwrap_or_default().to_string(),
-                    parameters: f["parameters"].clone(),
-                    kind: Kind::Screen,
-                });
-            }
         }
         match custom() {
             Ok(more) => {
@@ -271,7 +275,7 @@ impl Tools {
             .user_agent("milo/0.1")
             .build()
             .expect("reqwest client");
-        Tools { list, http, events, vision, small }
+        Tools { list, http, events, minds }
     }
 
     pub fn hands(&self) -> bool {
@@ -296,19 +300,16 @@ impl Tools {
         self.list.iter().any(|t| t.name == name && matches!(t.kind, Kind::Remember))
     }
 
-    pub fn rest(&self, ended: &str, done: bool) {
-        computer::rest(&self.small, ended, done);
-    }
-
-    fn working(call: &Call) -> bool {
-        call.args.contains_key("number") || (!call.args.contains_key("which") && computer::running())
-    }
-
-    fn gated(t: &Tool, call: &Call) -> bool {
+    fn gated(t: &Tool) -> bool {
         asking()
             && match t.kind {
-                Kind::Open | Kind::Computer | Kind::File | Kind::Message | Kind::Write | Kind::Command(_) => true,
-                Kind::CloseTab => !Self::working(call),
+                Kind::Open
+                | Kind::Computer
+                | Kind::File
+                | Kind::Message
+                | Kind::Write
+                | Kind::CloseTab
+                | Kind::Command(_) => true,
                 _ => false,
             }
     }
@@ -321,7 +322,10 @@ impl Tools {
             Kind::Remember => remember(&call.args),
             Kind::Forget => forget(&call.args),
             Kind::Computer => self.computer(&call.args).await,
-            Kind::Screen => Ok(computer::perform(&self.vision, call.clone()).await),
+            Kind::Task => {
+                let field = |key: &str| text(&call.args, key).unwrap_or_default();
+                computer::manage(&field("action"), &field("which"), &field("text")).await
+            }
             Kind::See => computer::see().await,
             Kind::Write => {
                 let words = call.args.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -337,7 +341,6 @@ impl Tools {
                 computer::shut(&tab, true).await?;
                 Ok(format!("brought the tab {} to the front", clip(&title)))
             }
-            Kind::CloseTab if Self::working(call) => Ok(computer::perform(&self.vision, call.clone()).await),
             Kind::CloseTab => {
                 let (tab, title) = computer::pick(&text(&call.args, "which").unwrap_or_default()).await?;
                 allow("Close this tab?", &title).await?;
@@ -355,13 +358,11 @@ impl Tools {
             return format!("there is no tool called {}", call.name);
         };
         let t = &self.list[at];
-        if Self::gated(t, call) {
+        if Self::gated(t) {
             self.clone().later(at, call.clone());
             return ASKED.to_string();
         }
-        let whole = matches!(t.kind, Kind::Screen | Kind::Computer | Kind::CloseTab);
         match self.attempt(t, call).await {
-            Ok(text) if whole => text,
             Ok(text) => clip(&text),
             Err(e) => format!("{} failed: {}", call.name, clip(&format!("{e:#}"))),
         }
@@ -371,9 +372,7 @@ impl Tools {
         tokio::spawn(async move {
             let t = &self.list[at];
             match self.attempt(t, &call).await {
-                Ok(text) if matches!(t.kind, Kind::Computer) => {
-                    let _ = self.events.send(Event::Aside(text));
-                }
+                Ok(_) if matches!(t.kind, Kind::Computer) => {}
                 Ok(text) => {
                     let _ = self.events.send(Event::Aside(clip(&text)));
                 }
@@ -487,14 +486,9 @@ impl Tools {
                 _ => return Err(Skipped.into()),
             }
         }
-        let lead = computer::begin(&self.events, &task, &steps, show).await?;
-        let Some(what) = text(args, "open") else { return Ok(lead) };
-        let mut first = Map::new();
-        first.insert("what".to_string(), what.into());
-        computer::round();
-        let did =
-            computer::perform(&self.vision, Call { id: String::new(), name: "go".to_string(), args: first }).await;
-        Ok(format!("{lead}\n\n{did}"))
+        let plan = computer::Plan { task, steps, open: text(args, "open"), show };
+        computer::start(self.minds.clone(), plan, self.events.clone());
+        Ok(STARTED.to_string())
     }
 
     fn timer(&self, args: &Map<String, Value>) -> Result<String> {
@@ -904,7 +898,7 @@ pub fn clip(s: &str) -> String {
 pub fn shorten(history: &mut [Message]) {
     let read = history.iter().rposition(|m| m.role == Role::Tool && m.content.starts_with(computer::READ));
     for (at, old) in history.iter_mut().enumerate() {
-        if old.role != Role::Tool || Some(at) == read || old.content.starts_with(computer::LEAD) {
+        if old.role != Role::Tool || Some(at) == read {
             continue;
         }
         if old.content.chars().count() > OLD {
@@ -939,37 +933,4 @@ pub fn brief(text: &str) -> String {
         true => line.chars().take(SHOWN).collect::<String>() + "…",
         false => line.to_string(),
     }
-}
-
-pub async fn solo(llm: &Llm, tools: Arc<Tools>, system: &str, task: &str, steps: &[String]) -> Result<String> {
-    let schema = tools.schema();
-    let mut ask = task.to_string();
-    if !steps.is_empty() {
-        let plan: Vec<String> = steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect();
-        ask.push_str(&format!("\n\nDo it in these steps:\n{}", plan.join("\n")));
-    }
-    let mut history = vec![Message::system(system), Message::user(ask)];
-    for _ in 0..ROUNDS {
-        let reply = match llm.act(&computer::compose(&history), &schema).await {
-            Err(e) if format!("{e:#}").contains(" 400") => {
-                computer::blind();
-                llm.act(&computer::compose(&history), &schema).await?
-            }
-            other => other?,
-        };
-        if reply.calls.is_empty() {
-            computer::finish(&tools.small, &reply.text, true).await;
-            return Ok(reply.text);
-        }
-        shorten(&mut history);
-        history.push(Message::called(reply.text.clone(), &reply.calls));
-        for call in &reply.calls {
-            println!("({} {})", call.name, Value::Object(call.args.clone()));
-            let out = tools.run(call).await;
-            println!("-> {}", brief(&out));
-            history.push(Message::tool(&call.id, out));
-        }
-    }
-    computer::finish(&tools.small, "it ran out of steps", false).await;
-    bail!("it ran out of steps before finishing {task}")
 }

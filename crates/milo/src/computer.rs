@@ -1,7 +1,8 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -10,7 +11,8 @@ use base64::engine::general_purpose::STANDARD;
 use browser::Browser;
 use llm::{Call, Llm, Message, Role};
 use serde_json::{Map, Value, json};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::{Notify, OwnedMutexGuard, oneshot};
 
 use crate::controller::Event;
 use crate::skills;
@@ -37,7 +39,19 @@ const STARTED: Duration = Duration::from_secs(15);
 const FOLLOWED: Duration = Duration::from_secs(6);
 const WAITED: Duration = Duration::from_secs(1);
 pub const READ: &str = "the text of the page";
-pub const LEAD: &str = "You are working on their computer now, on the plan you gave for";
+const LEAD: &str = "Carry out this plan on their computer:";
+const ROUNDS: usize = 60;
+const DOING: usize = 90;
+const HOLD: Duration = Duration::from_secs(6);
+const PATIENT: Duration = Duration::from_secs(600);
+const QUEUED: &str = "Waiting for other work in the apps to finish";
+const ALONE: &str = "there is nobody to ask right now. Stop here and say what you needed";
+const UNANSWERED: &str = "they did not answer in time. Stop here and say what you were waiting for";
+const WAITS: &str = "What it is working in was brought to the front of their screen. Tell them in a sentence what it needs. When they say it is done, or they answer, pass that on with task and the action tell";
+const SAID: &str = "They just said this about the work, so go by it from here on:";
+const PRESSED: &str = "they pressed Stop on their screen, so the work on";
+const REPORT: &str = "This is its report, to tell them in your own words:";
+const HALTED: &str = "the person stopped it before it finished";
 const LOGGED: usize = 400;
 const TABS: usize = 30;
 const SAME: &str = "Nothing on the screen changed, so that did nothing. Do not repeat it. Try a different way, like a key, a menu item or another control.";
@@ -71,26 +85,14 @@ const OWN: &str = " (your own browser, where websites open)";
 
 static NOTICED: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
 static TOLD: Mutex<String> = Mutex::new(String::new());
-static CURRENT: AtomicU64 = AtomicU64::new(0);
 static BLIND: AtomicBool = AtomicBool::new(false);
-static FRESH: AtomicBool = AtomicBool::new(true);
-static EPOCH: AtomicU64 = AtomicU64::new(0);
 static SHOWN: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
-static SHOT: AtomicUsize = AtomicUsize::new(0);
-static SESSION: tokio::sync::Mutex<Session> = tokio::sync::Mutex::const_new(Session {
-    browser: None,
-    place: Place::None,
-    mine: None,
-    tabs: Vec::new(),
-    warned: false,
-    refused: 0,
-    lent: None,
-    trail: Vec::new(),
-    task: None,
-    seen: None,
-    paced: None,
-    round: None,
-});
+static HELD: Mutex<Option<Instant>> = Mutex::new(None);
+static TASKS: Mutex<Vec<Running>> = Mutex::new(Vec::new());
+static LAST: Mutex<Option<(Place, Option<String>)>> = Mutex::new(None);
+static HANDS: LazyLock<Arc<tokio::sync::Mutex<()>>> = LazyLock::new(Arc::default);
+static DESK: tokio::sync::Mutex<Desk> =
+    tokio::sync::Mutex::const_new(Desk { browser: None, warned: false, refused: 0 });
 
 #[derive(Clone, PartialEq)]
 enum Place {
@@ -99,19 +101,54 @@ enum Place {
     Tab(String),
 }
 
+struct Desk {
+    browser: Option<Arc<Browser>>,
+    warned: bool,
+    refused: usize,
+}
+
+#[derive(Clone)]
+struct Running {
+    id: u64,
+    name: String,
+    doing: String,
+    wants: Option<String>,
+    place: Place,
+    tell: UnboundedSender<String>,
+    halt: Arc<Notify>,
+    shown: bool,
+}
+
+pub struct Plan {
+    pub task: String,
+    pub steps: Vec<String>,
+    pub open: Option<String>,
+    pub show: bool,
+}
+
+pub struct Minds {
+    pub main: Llm,
+    pub vision: Llm,
+    pub small: Llm,
+    pub system: String,
+}
+
 struct Session {
-    browser: Option<Browser>,
+    browser: Option<Arc<Browser>>,
     place: Place,
     mine: Option<String>,
     tabs: Vec<String>,
-    warned: bool,
-    refused: usize,
     lent: Option<i64>,
     trail: Vec<skills::Step>,
     task: Option<Task>,
     seen: Option<Seen>,
+    shown: Option<(String, Option<String>)>,
     paced: Option<Instant>,
     round: Option<(Seen, bool)>,
+    fresh: bool,
+    hands: Option<OwnedMutexGuard<()>>,
+    folder: PathBuf,
+    shots: usize,
 }
 
 struct Task {
@@ -160,7 +197,7 @@ impl Seen {
 }
 
 pub fn running() -> bool {
-    CURRENT.load(Relaxed) != 0
+    !tasks().is_empty()
 }
 
 pub fn schema() -> Vec<Value> {
@@ -237,9 +274,21 @@ pub fn schema() -> Vec<Value> {
     ];
     all.push(tool(
         "tab",
-        "While you work on their computer: go to a browser tab that is already open, and work there.",
+        "While you work on their computer: go to a tab that is already open in your own browser, and work there.",
         json!({ "number": tab }),
         &["number"],
+    ));
+    all.push(tool(
+        "close_tab",
+        "While you work on their computer: close a tab of your own browser, by its number in the list of open tabs. Without a number it closes the tab you are in.",
+        json!({ "number": tab }),
+        &[],
+    ));
+    all.push(tool(
+        "ask",
+        "While you work on their computer: stop and hand over to the person, when only they can do the next thing, like signing in to a site, getting past a check that they are human, or choosing between things the plan does not settle. The place you are in is brought to the front of their screen, and you wait. It answers with what they said when they are done.",
+        json!({ "what": { "type": "string", "description": "What you need from them, in one short sentence, like Sign in to Gmail in the window in front." } }),
+        &["what"],
     ));
     all
 }
@@ -254,18 +303,18 @@ async fn act(request: Value) -> Result<String, String> {
     control(request).await.map(|answer| answer["text"].as_str().unwrap_or_default().to_string())
 }
 
-fn saved() -> std::path::PathBuf {
+fn saved() -> PathBuf {
     std::env::temp_dir().join("milo-computer")
 }
 
-fn next() -> String {
-    let at = SHOT.fetch_add(1, Relaxed);
-    saved().join(format!("{at:02}.jpg")).to_string_lossy().into_owned()
+fn next(s: &mut Session) -> String {
+    s.shots += 1;
+    s.folder.join(format!("{:02}.jpg", s.shots - 1)).to_string_lossy().into_owned()
 }
 
-fn keep(seen: &Seen, did: &str) {
-    let at = SHOT.load(Relaxed).saturating_sub(1);
-    let _ = std::fs::write(saved().join(format!("{at:02}.txt")), format!("{did}\n\n{}\n", seen.text));
+fn keep(s: &Session, seen: &Seen, did: &str) {
+    let at = s.shots.saturating_sub(1);
+    let _ = std::fs::write(s.folder.join(format!("{at:02}.txt")), format!("{did}\n\n{}\n", seen.text));
 }
 
 fn site(address: &str) -> &str {
@@ -296,50 +345,12 @@ async fn here(s: &Session) -> String {
     }
 }
 
-async fn link(s: &mut Session) {
-    if s.browser.as_ref().is_some_and(Browser::alive) {
-        return;
-    }
-    s.browser = None;
-    if s.refused >= REFUSALS {
-        return;
-    }
-    if browser::found().is_none() {
-        if !s.warned {
-            log::warn!("{OFF}");
-            s.warned = true;
-        }
-        return;
-    }
-    let back = front().await;
-    let got = Browser::connect(STARTED).await;
-    if let Some((back, _)) = back
-        && front().await.is_some_and(|(ahead, _)| ahead != back)
-    {
-        forward(back).await;
-    }
-    match got {
-        Ok(browser) => {
-            log::info!("milo's own browser is {}", browser.name());
-            s.refused = 0;
-            s.browser = Some(browser);
-        }
-        Err(e) => {
-            s.refused += 1;
-            let after = if s.refused >= REFUSALS { ", and milo will not try again until it starts again" } else { "" };
-            log::warn!(
-                "milo's own browser could not be started, so websites are read off the screen instead{after}: {e:#}"
-            );
-        }
-    }
-}
-
-async fn facing(s: &Session) -> (Vec<Value>, Option<String>) {
+async fn facing(browser: Option<&Arc<Browser>>) -> (Vec<Value>, Option<String>) {
     let apps = match control(json!({ "op": "around" })).await {
         Ok(answer) => answer["apps"].as_array().cloned().unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    let Some(browser) = &s.browser else { return (apps, None) };
+    let Some(browser) = browser else { return (apps, None) };
     let own = browser.pid();
     let title =
         apps.iter().find(|app| own.is_some() && app["pid"].as_i64() == own).and_then(|app| app["title"].as_str());
@@ -353,7 +364,7 @@ async fn facing(s: &Session) -> (Vec<Value>, Option<String>) {
 }
 
 async fn around(s: &mut Session) -> String {
-    let (apps, shown) = facing(s).await;
+    let (apps, shown) = facing(s.browser.as_ref()).await;
     let mut out = String::from("Open on their Mac:");
     for app in &apps {
         out.push_str(&format!("\n- {}", app["name"].as_str().unwrap_or_default()));
@@ -405,7 +416,7 @@ async fn around(s: &mut Session) -> String {
 }
 
 async fn screen(s: &mut Session) -> Seen {
-    let path = next();
+    let path = next(s);
     match s.place.clone() {
         Place::Tab(tab) => {
             let got = match &s.browser {
@@ -733,6 +744,7 @@ async fn visit(s: &mut Session, what: &str) -> Result<String> {
 }
 
 async fn launch(s: &mut Session, what: &str, web: bool) -> Result<String, String> {
+    grab(s).await;
     let was = control(json!({ "op": "glance" })).await.ok().map(|answer| Seen::from(&answer));
     let mut did = match web {
         true => act(json!({ "op": "visit", "what": what })).await,
@@ -964,7 +976,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
     } else if !quiet && place == s.place {
         did.push_str(&changed(before, &after));
     }
-    keep(&after, &format!("{name} {} -> {did}", Value::Object(call.args.clone())));
+    keep(s, &after, &format!("{name} {} -> {did}", Value::Object(call.args.clone())));
     let wasted = failed || (!quiet && !went && after.same(before));
     (did, after, wasted)
 }
@@ -977,15 +989,109 @@ fn card(task: &str, doing: &str) -> notch::Card {
     }
 }
 
+fn tasks() -> std::sync::MutexGuard<'static, Vec<Running>> {
+    TASKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn mark(id: u64, change: impl FnOnce(&mut Running)) {
+    if let Some(entry) = tasks().iter_mut().find(|entry| entry.id == id) {
+        change(entry);
+    }
+}
+
+async fn linked() -> Option<Arc<Browser>> {
+    let mut held = DESK.lock().await;
+    let desk = &mut *held;
+    if desk.browser.as_ref().is_some_and(|browser| browser.alive()) {
+        return desk.browser.clone();
+    }
+    desk.browser = None;
+    if desk.refused >= REFUSALS {
+        return None;
+    }
+    if browser::found().is_none() {
+        if !desk.warned {
+            log::warn!("{OFF}");
+            desk.warned = true;
+        }
+        return None;
+    }
+    let back = front().await;
+    let got = Browser::connect(STARTED).await;
+    if let Some((back, _)) = back
+        && front().await.is_some_and(|(ahead, _)| ahead != back)
+    {
+        forward(back).await;
+    }
+    match got {
+        Ok(browser) => {
+            log::info!("milo's own browser is {}", browser.name());
+            desk.refused = 0;
+            desk.browser = Some(Arc::new(browser));
+        }
+        Err(e) => {
+            desk.refused += 1;
+            let after =
+                if desk.refused >= REFUSALS { ", and milo will not try again until it starts again" } else { "" };
+            log::warn!(
+                "milo's own browser could not be started, so websites are read off the screen instead{after}: {e:#}"
+            );
+        }
+    }
+    desk.browser.clone()
+}
+
+async fn link(s: &mut Session) {
+    if !s.browser.as_ref().is_some_and(|browser| browser.alive()) {
+        s.browser = linked().await;
+    }
+}
+
+async fn grab(s: &mut Session) {
+    if s.hands.is_some() {
+        return;
+    }
+    let hands = match HANDS.clone().try_lock_owned() {
+        Ok(hands) => hands,
+        Err(_) => {
+            if let Some(task) = &s.task {
+                notch::revise(task.id, &card(&task.name, QUEUED));
+                mark(task.id, |entry| entry.doing = QUEUED.to_string());
+            }
+            HANDS.clone().lock_owned().await
+        }
+    };
+    s.hands = Some(hands);
+}
+
 async fn arrive(s: &mut Session) {
-    s.tabs.clear();
-    s.place = match s.place.clone() {
+    let left = LAST.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let (place, mine) = left.unwrap_or((Place::None, None));
+    s.mine = mine;
+    s.place = match place {
         Place::Tab(tab) if exists(s, &tab).await => Place::Tab(tab),
-        Place::Window if act(json!({ "op": "start" })).await.is_ok_and(|name| !name.is_empty()) => Place::Window,
+        Place::Window => match HANDS.clone().try_lock_owned() {
+            Ok(hands) if act(json!({ "op": "start" })).await.is_ok_and(|name| !name.is_empty()) => {
+                s.hands = Some(hands);
+                Place::Window
+            }
+            _ => Place::None,
+        },
         _ => Place::None,
     };
-    if s.place != Place::Window {
-        let _ = act(json!({ "op": "drop" })).await;
+}
+
+async fn bring(place: &Place, browser: Option<&Arc<Browser>>) -> bool {
+    match (place, browser) {
+        (Place::Tab(tab), Some(browser)) => {
+            let shown = browser.show(tab).await.is_ok();
+            if let Some(pid) = browser.pid() {
+                forward(pid).await;
+            }
+            shown
+        }
+        (Place::Window, _) => act(json!({ "op": "raise" })).await.is_ok(),
+        _ => false,
     }
 }
 
@@ -1021,27 +1127,18 @@ fn titled(seen: &Seen) -> Vec<&str> {
         .collect()
 }
 
-fn show(seen: &Seen, pictured: bool) {
+fn shown(seen: &Seen, pictured: bool) -> (String, Option<String>) {
     let sparse = seen.text.lines().filter(|line| line.starts_with('[')).count() < SPARSE;
     let image = seen.image.clone().filter(|_| pictured || sparse || seen.web);
-    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some((squeeze(&seen.text), image));
+    (squeeze(&seen.text), image)
 }
 
-fn hide() {
-    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+fn show(s: &mut Session, seen: &Seen, pictured: bool) {
+    s.shown = Some(shown(seen, pictured));
 }
 
-pub fn blind() {
-    BLIND.store(true, Relaxed);
-}
-
-pub fn epoch() -> u64 {
-    EPOCH.load(Relaxed)
-}
-
-pub fn compose(history: &[Message]) -> Vec<Message> {
-    let mut out = history.to_vec();
-    let Some((text, image)) = SHOWN.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return out };
+fn attach(mut out: Vec<Message>, shown: Option<(String, Option<String>)>) -> Vec<Message> {
+    let Some((text, image)) = shown else { return out };
     let image = image.filter(|_| !BLIND.load(Relaxed));
     let lead = if image.is_some() { PICTURED } else { SCREEN };
     match out.last_mut() {
@@ -1054,56 +1151,91 @@ pub fn compose(history: &[Message]) -> Vec<Message> {
     out
 }
 
-pub async fn begin(events: &UnboundedSender<Event>, task: &str, steps: &[String], shown: bool) -> Result<String> {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    if let Some(old) = s.task.take() {
-        notch::dismiss(old.id);
+pub fn compose(history: &[Message]) -> Vec<Message> {
+    attach(history.to_vec(), SHOWN.lock().unwrap_or_else(|e| e.into_inner()).clone())
+}
+
+pub fn hide() {
+    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+pub fn blind() {
+    BLIND.store(true, Relaxed);
+}
+
+pub fn hold() {
+    *HELD.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+}
+
+async fn pause() {
+    while HELD.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|at| at.elapsed() < HOLD) {
+        tokio::time::sleep(QUICK).await;
     }
-    act(json!({ "op": "start" })).await.map_err(|e| anyhow!("{e}"))?;
-    let _ = std::fs::remove_dir_all(saved());
-    let _ = std::fs::create_dir_all(saved());
-    SHOT.store(0, Relaxed);
-    s.trail.clear();
-    s.lent = None;
-    let (id, stopped) = notch::show(&card(task, "Starting"));
-    let events = events.clone();
-    tokio::spawn(async move {
-        if stopped.await.is_ok() {
-            let _ = events.send(Event::Halt);
-        }
-    });
-    link(s).await;
-    arrive(s).await;
-    let mut lead = format!("{LEAD} {task}. {PACE}");
-    let before = screen(s).await;
+}
+
+pub fn working() -> Vec<String> {
+    tasks()
+        .iter()
+        .map(|entry| match &entry.wants {
+            Some(wants) => format!("\"{}\" (stopped, waiting for them: {wants})", entry.name),
+            None => {
+                let doing: String = entry.doing.chars().take(DOING).collect();
+                format!("\"{}\" (latest: {doing})", entry.name)
+            }
+        })
+        .collect()
+}
+
+async fn begin(plan: &Plan, id: u64) -> Result<(Session, String)> {
+    control(json!({ "op": "around" })).await.map_err(|e| anyhow!("{e}"))?;
+    let folder = if tasks().len() <= 1 { saved() } else { saved().join(id.to_string()) };
+    let _ = std::fs::remove_dir_all(&folder);
+    let _ = std::fs::create_dir_all(&folder);
+    let task =
+        Task { id, name: plan.task.clone(), show: plan.show, steps: 0, done: HashMap::new(), briefed: Vec::new() };
+    let mut s = Session {
+        browser: linked().await,
+        place: Place::None,
+        mine: None,
+        tabs: Vec::new(),
+        lent: None,
+        trail: Vec::new(),
+        task: Some(task),
+        seen: None,
+        shown: None,
+        paced: None,
+        round: None,
+        fresh: true,
+        hands: None,
+        folder,
+        shots: 0,
+    };
+    arrive(&mut s).await;
+    let steps: Vec<String> = plan.steps.iter().enumerate().map(|(at, step)| format!("{}. {step}", at + 1)).collect();
+    let mut lead = format!("{LEAD} {}\n{}\n\n{PACE}", plan.task, steps.join("\n"));
+    let before = screen(&mut s).await;
     if s.place != Place::None {
-        lead.push_str(&format!("\n\n{}", around(s).await));
+        lead.push_str(&format!("\n\n{}", around(&mut s).await));
     }
-    let mut briefed: Vec<String> = Vec::new();
-    let asked = format!("{task}\n{}", steps.join("\n"));
-    for place in std::iter::once(here(s).await).chain(skills::named(&asked)) {
-        if briefed.contains(&skills::slug(&place)) {
+    let asked = format!("{}\n{}", plan.task, plan.steps.join("\n"));
+    for place in std::iter::once(here(&s).await).chain(skills::named(&asked)) {
+        let Some(task) = s.task.as_mut() else { break };
+        if task.briefed.contains(&skills::slug(&place)) {
             continue;
         }
         if let Some(notes) = skills::brief(&place) {
             lead.push_str(&notes);
-            briefed.push(skills::slug(&place));
+            task.briefed.push(skills::slug(&place));
         }
     }
-    keep(&before, &lead);
-    show(&before, true);
+    keep(&s, &before, &lead);
+    show(&mut s, &before, true);
     s.seen = Some(before);
-    s.task = Some(Task { id, name: task.to_string(), show: shown, steps: 0, done: HashMap::new(), briefed });
     s.paced = Some(Instant::now());
-    EPOCH.fetch_add(1, Relaxed);
-    CURRENT.store(id, Relaxed);
-    Ok(lead)
+    Ok((s, lead))
 }
 
-pub async fn perform(llm: &Llm, mut call: Call) -> String {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
+async fn perform(llm: &Llm, s: &mut Session, mut call: Call) -> String {
     let Some(task) = s.task.as_mut() else { return UNPLANNED.to_string() };
     task.steps += 1;
     if task.steps > MAX_STEPS {
@@ -1126,7 +1258,7 @@ pub async fn perform(llm: &Llm, mut call: Call) -> String {
     };
     let began = Instant::now();
     let thought = s.paced.map_or(0, |paced| began.duration_since(paced).as_millis());
-    if FRESH.swap(false, Relaxed) {
+    if std::mem::take(&mut s.fresh) {
         s.round = None;
     }
     let numbered = !["tab", "close_tab"].contains(&call.name.as_str());
@@ -1170,111 +1302,280 @@ pub async fn perform(llm: &Llm, mut call: Call) -> String {
         acted: !["go", "look", "read", "tab"].contains(&call.name.as_str()),
     });
     notch::revise(id, &card(&name, brief(&did)));
-    show(&now, wasted || call.name == "look" || did.contains(UNMOVED) || titled(&before) != titled(&now));
+    let (spot, doing) = (s.place.clone(), brief(&did).to_string());
+    mark(id, |entry| {
+        entry.place = spot;
+        entry.doing = doing;
+    });
+    show(s, &now, wasted || call.name == "look" || did.contains(UNMOVED) || titled(&before) != titled(&now));
     s.seen = Some(now);
     s.paced = Some(Instant::now());
     did
 }
 
-pub fn round() {
-    FRESH.store(true, Relaxed);
-}
-
-pub async fn refresh() {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    if s.task.is_none() {
-        return;
+async fn ask(
+    s: &mut Session,
+    call: &Call,
+    inbox: &mut UnboundedReceiver<String>,
+    events: Option<&UnboundedSender<Event>>,
+) -> String {
+    let what = call.args.get("what").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+    let (Some(events), Some(task)) = (events, s.task.as_ref()) else { return ALONE.to_string() };
+    let (id, name) = (task.id, task.name.clone());
+    if bring(&s.place, s.browser.as_ref()).await {
+        s.lent = None;
     }
+    notch::revise(id, &card(&name, &format!("Needs you: {what}")));
+    mark(id, |entry| entry.wants = Some(what.clone()));
+    let _ = events.send(Event::Aside(format!("the work on \"{name}\" has stopped to wait for them: {what}. {WAITS}")));
+    let got = tokio::time::timeout(PATIENT, inbox.recv()).await;
+    mark(id, |entry| entry.wants = None);
+    notch::revise(id, &card(&name, "Going on"));
+    let Ok(Some(said)) = got else { return UNANSWERED.to_string() };
     settle(s, None, SETTLED).await;
     let now = screen(s).await;
-    show(&now, false);
+    show(s, &now, true);
     s.seen = Some(now);
+    format!("they answered: {said}")
+}
+
+async fn carry(
+    minds: &Minds,
+    s: &mut Session,
+    mut lead: String,
+    plan: &Plan,
+    inbox: &mut UnboundedReceiver<String>,
+    events: Option<&UnboundedSender<Event>>,
+) -> Result<String> {
+    let schema = Value::Array(schema());
+    if let Some(what) = &plan.open {
+        let mut first = Map::new();
+        first.insert("what".to_string(), what.clone().into());
+        let did = perform(&minds.vision, s, Call { id: String::new(), name: "go".to_string(), args: first }).await;
+        lead.push_str(&format!("\n\nThe plan starts in {what}, so that was done for you already: {did}"));
+    }
+    let system = minds.system.replace("{memory}", &tools::memory_section());
+    let mut history = vec![Message::system(system), Message::user(lead)];
+    for _ in 0..ROUNDS {
+        pause().await;
+        while let Ok(said) = inbox.try_recv() {
+            history.push(Message::user(format!("{SAID} {said}")));
+        }
+        let reply = match minds.main.act(&attach(history.clone(), s.shown.clone()), &schema).await {
+            Err(e) if format!("{e:#}").contains(" 400") => {
+                blind();
+                minds.main.act(&attach(history.clone(), s.shown.clone()), &schema).await?
+            }
+            other => other?,
+        };
+        if reply.calls.is_empty() {
+            return Ok(reply.text);
+        }
+        tools::shorten(&mut history);
+        history.push(Message::called(reply.text.clone(), &reply.calls));
+        s.fresh = true;
+        for call in &reply.calls {
+            pause().await;
+            let mut args = call.args.clone();
+            args.remove("why");
+            log::info!("({} {})", call.name, Value::Object(args));
+            let out = match call.name.as_str() {
+                "ask" => ask(s, call, inbox, events).await,
+                _ => perform(&minds.vision, s, call.clone()).await,
+            };
+            log::info!("-> {}", tools::brief(&out));
+            history.push(Message::tool(&call.id, out));
+        }
+    }
+    bail!("it took too many rounds")
+}
+
+async fn end(mut s: Session, small: &Llm, ended: &str, done: bool, wait: bool) {
+    let Some(task) = s.task.take() else { return };
+    let entry = {
+        let mut all = tasks();
+        all.iter().position(|entry| entry.id == task.id).map(|at| all.remove(at))
+    };
+    if task.show && done && bring(&s.place, s.browser.as_ref()).await {
+        s.lent = None;
+    }
+    if let Some(back) = s.lent.take().filter(|_| entry.is_none_or(|entry| !entry.shown)) {
+        forward(back).await;
+    }
+    notch::dismiss(task.id);
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((s.place.clone(), s.mine.clone()));
+    let trail = std::mem::take(&mut s.trail);
+    drop(s);
+    let learn = skills::learn(small.clone(), task.name, trail, ended.to_string(), done);
+    if wait {
+        learn.await;
+    } else {
+        tokio::spawn(learn);
+    }
+}
+
+fn enlist(plan: &Plan) -> (u64, oneshot::Receiver<String>, UnboundedReceiver<String>, Arc<Notify>) {
+    let (id, pressed) = notch::show(&card(&plan.task, "Starting"));
+    let (tell, inbox) = unbounded_channel();
+    let halt = Arc::new(Notify::new());
+    tasks().push(Running {
+        id,
+        name: plan.task.clone(),
+        doing: "starting".to_string(),
+        wants: None,
+        place: Place::None,
+        tell,
+        halt: halt.clone(),
+        shown: false,
+    });
+    (id, pressed, inbox, halt)
+}
+
+fn delist(id: u64) {
+    tasks().retain(|entry| entry.id != id);
+    notch::dismiss(id);
+}
+
+pub fn start(minds: Arc<Minds>, plan: Plan, events: UnboundedSender<Event>) {
+    let (id, mut pressed, mut inbox, halt) = enlist(&plan);
+    tokio::spawn(async move {
+        let name = plan.task.clone();
+        let (mut s, lead) = match begin(&plan, id).await {
+            Ok(begun) => begun,
+            Err(e) => {
+                delist(id);
+                let _ = events.send(Event::Aside(format!("the work on \"{name}\" could not start: {e:#}")));
+                return;
+            }
+        };
+        let spot = s.place.clone();
+        mark(id, |entry| entry.place = spot);
+        let ended = tokio::select! {
+            out = carry(&minds, &mut s, lead, &plan, &mut inbox, Some(&events)) => Some(out),
+            _ = halt.notified() => None,
+            Ok(_) = &mut pressed => {
+                let _ = events.send(Event::Aside(format!("{PRESSED} \"{name}\" was stopped")));
+                None
+            }
+        };
+        match ended {
+            Some(Ok(text)) => {
+                end(s, &minds.small, &text, true, false).await;
+                let _ = events.send(Event::Aside(format!("the work on \"{name}\" is finished. {REPORT} {text}")));
+            }
+            Some(Err(e)) => {
+                let why = format!("{e:#}");
+                end(s, &minds.small, &why, false, false).await;
+                let _ = events.send(Event::Aside(format!("the work on \"{name}\" could not be finished: {why}")));
+            }
+            None => end(s, &minds.small, HALTED, false, false).await,
+        }
+    });
+}
+
+pub async fn solo(minds: &Minds, plan: Plan) -> Result<String> {
+    let (id, _pressed, mut inbox, _halt) = enlist(&plan);
+    let (mut s, lead) = match begin(&plan, id).await {
+        Ok(begun) => begun,
+        Err(e) => {
+            delist(id);
+            return Err(e);
+        }
+    };
+    let out = carry(minds, &mut s, lead, &plan, &mut inbox, None).await;
+    match &out {
+        Ok(text) => end(s, &minds.small, text, true, true).await,
+        Err(e) => end(s, &minds.small, &format!("{e:#}"), false, true).await,
+    }
+    out
+}
+
+fn chosen(which: &str) -> Result<Option<Running>> {
+    let all = tasks();
+    let wanted: Vec<String> = which
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|word| !["the", "task", "work", "one"].contains(word))
+        .map(str::to_string)
+        .collect();
+    let hits: Vec<&Running> = all
+        .iter()
+        .filter(|entry| wanted.is_empty() || wanted.iter().all(|word| entry.name.to_lowercase().contains(word)))
+        .collect();
+    let named = |from: &[&Running]| from.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>().join("; ");
+    match hits.as_slice() {
+        [entry] => Ok(Some((*entry).clone())),
+        [] if all.len() == 1 => Ok(all.first().cloned()),
+        [] if all.is_empty() => Ok(None),
+        [] => {
+            bail!("none of the work under way matches that; it is one of: {}", named(&all.iter().collect::<Vec<_>>()))
+        }
+        many => bail!("more than one is under way, so say which with a word from its name: {}", named(many)),
+    }
+}
+
+pub async fn manage(action: &str, which: &str, text: &str) -> Result<String> {
+    let entry = chosen(which)?;
+    let browser = DESK.lock().await.browser.clone();
+    let reveal = async |entry: Option<&Running>| -> Result<String> {
+        let place = match entry {
+            Some(entry) => entry.place.clone(),
+            None => {
+                let left = LAST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                left.map(|(place, _)| place).unwrap_or(Place::None)
+            }
+        };
+        if !bring(&place, browser.as_ref()).await {
+            bail!("there is nothing to show yet");
+        }
+        if let Some(entry) = entry {
+            mark(entry.id, |entry| entry.shown = true);
+        }
+        Ok("brought what was being worked in to the front of their screen".to_string())
+    };
+    match (action, entry) {
+        ("show", entry) => reveal(entry.as_ref()).await,
+        (_, None) => bail!("nothing is being worked on right now"),
+        ("tell", Some(entry)) => {
+            if text.trim().is_empty() {
+                bail!("say what to pass on");
+            }
+            entry.tell.send(text.trim().to_string()).map_err(|_| anyhow!("that work has already ended"))?;
+            Ok(format!("passed it on to the work on \"{}\", which goes by it from its next action", entry.name))
+        }
+        ("take", Some(entry)) => {
+            let shown = reveal(Some(&entry)).await;
+            entry.halt.notify_one();
+            Ok(match shown {
+                Ok(_) => format!("stopped the work on \"{}\" and brought it to the front for them", entry.name),
+                Err(_) => format!("stopped the work on \"{}\"", entry.name),
+            })
+        }
+        (_, Some(entry)) => {
+            entry.halt.notify_one();
+            Ok(format!("stopped the work on \"{}\"", entry.name))
+        }
+    }
 }
 
 pub async fn see() -> Result<String> {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    if s.task.is_some() {
-        let now = screen(s).await;
-        show(&now, true);
-        s.seen = Some(now);
-        return Ok("The place you are working in is shown below again".to_string());
-    }
-    let (apps, shown) = facing(s).await;
+    let browser = DESK.lock().await.browser.clone();
+    let (apps, shown) = facing(browser.as_ref()).await;
     let front = apps.iter().find(|app| app["front"] == true);
-    let hosting = front.is_some_and(|app| app["host"] == true);
-    let own = s.browser.as_ref().and_then(Browser::pid);
+    let own = browser.as_ref().and_then(|browser| browser.pid());
     let browsing = front.is_some_and(|app| own.is_some() && app["pid"].as_i64() == own);
-    let tab = match (&s.place, shown) {
-        (Place::Tab(tab), _) if hosting => Some(tab.clone()),
-        (_, Some(tab)) if browsing => Some(tab),
-        _ => None,
-    };
-    let seen = match (tab, &s.browser) {
+    let seen = match (shown.filter(|_| browsing), &browser) {
         (Some(tab), Some(browser)) => {
             let seen = browser.look(&tab).await?;
             Seen { text: seen.text, image: seen.image, print: Vec::new(), web: false }
         }
-        _ => {
-            let op = if hosting && s.place == Place::Window { "look" } else { "peek" };
-            Seen::from(&control(json!({ "op": op })).await.map_err(|e| anyhow!("{e}"))?)
-        }
+        _ => Seen::from(&control(json!({ "op": "peek" })).await.map_err(|e| anyhow!("{e}"))?),
     };
     if seen.image.is_none() && seen.text.trim().is_empty() {
         bail!("there is no window to look at");
     }
-    show(&seen, true);
+    *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = Some(self::shown(&seen, true));
     Ok(FRONT.to_string())
-}
-
-async fn end(llm: Llm, id: u64, ended: String, done: bool) {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    if s.task.as_ref().is_none_or(|task| task.id != id) {
-        return;
-    }
-    let Some(task) = s.task.take() else { return };
-    s.seen = None;
-    if task.show && done {
-        match (&s.place, &s.browser) {
-            (Place::Tab(tab), Some(browser)) => {
-                let _ = browser.show(tab).await;
-                if let Some(pid) = browser.pid() {
-                    forward(pid).await;
-                }
-                s.lent = None;
-            }
-            (Place::Window, _) => {
-                let _ = act(json!({ "op": "raise" })).await;
-                s.lent = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(back) = s.lent.take() {
-        forward(back).await;
-    }
-    notch::dismiss(task.id);
-    let trail = std::mem::take(&mut s.trail);
-    drop(held);
-    skills::learn(llm, task.name, trail, ended, done).await;
-}
-
-pub fn rest(llm: &Llm, ended: &str, done: bool) {
-    hide();
-    let id = CURRENT.swap(0, Relaxed);
-    if id != 0 {
-        tokio::spawn(end(llm.clone(), id, ended.to_string(), done));
-    }
-}
-
-pub async fn finish(llm: &Llm, ended: &str, done: bool) {
-    hide();
-    let id = CURRENT.swap(0, Relaxed);
-    if id != 0 {
-        end(llm.clone(), id, ended.to_string(), done).await;
-    }
 }
 
 pub async fn notice() {
@@ -1319,7 +1620,7 @@ pub async fn insert(text: &str, approve: impl AsyncFnOnce(String) -> Result<()>)
 
 pub async fn quit() {
     let leave = async {
-        if let Some(browser) = &SESSION.lock().await.browser {
+        if let Some(browser) = &DESK.lock().await.browser {
             browser.quit().await;
         }
     };
@@ -1331,9 +1632,8 @@ pub async fn installed(app: &str) -> Option<String> {
 }
 
 pub async fn media(action: &str) -> Result<String> {
-    let held = SESSION.lock().await;
-    let s = &*held;
-    if let Some(browser) = &s.browser
+    let browser = DESK.lock().await.browser.clone();
+    if let Some(browser) = &browser
         && (action == "pause" || action == "play")
     {
         let hit = browser.media(action == "play").await;
@@ -1353,13 +1653,12 @@ pub async fn media(action: &str) -> Result<String> {
 }
 
 pub async fn pick(which: &str) -> Result<(String, String)> {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    let Some(browser) = &s.browser else { bail!("you have no tabs open in your own browser") };
+    let browser = DESK.lock().await.browser.clone();
+    let Some(browser) = &browser else { bail!("you have no tabs open in your own browser") };
     let tabs = browser.tabs().await?;
-    let (_, shown) = facing(s).await;
-    let here = match &s.place {
-        Place::Tab(tab) => Some(tab.clone()),
+    let (_, shown) = facing(Some(browser)).await;
+    let here = match LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        Some((Place::Tab(tab), _)) => Some(tab.clone()),
         _ => None,
     };
     let wanted: Vec<String> = which
@@ -1386,7 +1685,7 @@ pub async fn pick(which: &str) -> Result<(String, String)> {
     match hits.as_slice() {
         [tab] => Ok((tab.id.clone(), tab.title.clone())),
         [] => bail!(
-            "no open tab matches that; the open tabs are: {}",
+            "no tab of yours matches that; your open tabs are: {}",
             tabs.iter().map(|tab| tab.title.as_str()).collect::<Vec<_>>().join("; ")
         ),
         many => bail!(
@@ -1397,23 +1696,24 @@ pub async fn pick(which: &str) -> Result<(String, String)> {
 }
 
 pub async fn shut(tab: &str, show: bool) -> Result<()> {
-    let mut held = SESSION.lock().await;
-    let s = &mut *held;
-    let Some(browser) = &s.browser else { bail!("{UNLINKED}") };
+    let browser = DESK.lock().await.browser.clone();
+    let Some(browser) = &browser else { bail!("{UNLINKED}") };
     if show {
         browser.show(tab).await?;
         if let Some(pid) = browser.pid() {
             forward(pid).await;
         }
-        s.place = Place::Tab(tab.to_string());
         return Ok(());
     }
     browser.close(tab).await?;
-    if s.place == Place::Tab(tab.to_string()) {
-        s.place = Place::None;
-    }
-    if s.mine.as_deref() == Some(tab) {
-        s.mine = None;
+    let mut left = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((place, mine)) = left.as_mut() {
+        if *place == Place::Tab(tab.to_string()) {
+            *place = Place::None;
+        }
+        if mine.as_deref() == Some(tab) {
+            *mine = None;
+        }
     }
     Ok(())
 }

@@ -7,9 +7,10 @@
 > see the [license](LICENSE).
 
 milo is a voice assistant for your Mac. You talk, and it talks back, like a
-phone call. You can talk over it to interrupt. It can also check the weather,
-set timers, open apps, use apps and websites for you, send text messages, and
-remember what you tell it.
+phone call. You can talk over it to interrupt. It knows which window is in
+front of you, and it works in your apps and on websites in the background
+while you keep talking. It can also check the weather, set timers, open
+apps, send text messages, and remember what you tell it.
 
 ## Requirements
 
@@ -94,8 +95,18 @@ milo can click, type, and press keys in your apps and on websites.
 2.  Ask milo for something that takes a few steps, and approve the plan in
     the panel.
 
-You can talk while milo works. To change the plan, say what you want
-instead. To stop it, say so, or click **Stop**.
+milo works in the background, behind your windows, and you can keep talking
+to it about anything. While it works, you can do the following:
+
+- To change the plan, say what you want instead.
+- To start more work at the same time, ask for it.
+- To watch, say "Show me."
+- To do the rest yourself, say "I'll take it from here."
+- To stop the work, say so, or click **Stop** in the panel.
+
+When the work needs you, for example to sign in to a site, milo brings the
+window to the front and tells you. When you finish, say so, and milo goes
+on.
 
 milo opens websites in a browser of its own, which is a second copy of
 Chrome, Brave, Edge, Vivaldi, or Chromium with a separate profile. Your own

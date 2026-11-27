@@ -45,15 +45,13 @@ const SHORT_WORDS: usize = 3;
 const SHORT_PATIENCE: Duration = Duration::from_millis(600);
 const RESULT: &str = "(result)";
 const WAITING: &str = "not done yet, waiting for them to approve on their screen:";
-const WORKING: &str =
-    "you were working on their computer when they said this, and that work is paused until you go on with it";
+const WORKING: &str = "under way in the background on their computer:";
+const HALTS: &[&str] = &["stop", "wait", "cancel", "hold", "pause", "nevermind", "don't", "dont"];
 const MAX_ROUNDS: usize = 60;
 const HELD: Duration = Duration::from_secs(8);
 const HELD_POLL: Duration = Duration::from_millis(20);
 const GRACE: Duration = Duration::from_millis(1200);
 const UNDONE: &str = "they spoke before this was finished, so it was stopped. It may or may not have happened: check what is there now before you do anything else";
-const HALTED: &str = "the person stopped it before it finished";
-const STOPPED: &str = "they pressed Stop on their screen, so the work on their computer was stopped";
 const BACKCHANNELS: &[&str] = &[
     "yeah", "yep", "yup", "uh-huh", "uh", "huh", "mhm", "mm-hmm", "mmhmm", "right", "okay", "ok", "sure", "wow",
     "nice", "cool", "oh", "ah", "ha", "haha", "true", "exactly", "gotcha", "hmm", "hm", "mm", "mhmm", "alright", "yes",
@@ -107,7 +105,6 @@ pub enum Event {
     TtsEnd { turn: u64 },
     Did { turn: u64, id: String, text: String },
     Acted { turn: u64 },
-    Halt,
     Quit,
     Aside(String),
     Trimmed { cut: usize, system: String },
@@ -168,7 +165,6 @@ struct Turn {
     acting: Option<JoinHandle<()>>,
     rounds: usize,
     hush: bool,
-    epoch: u64,
     said: String,
     started: Instant,
     eou: Option<Instant>,
@@ -419,7 +415,6 @@ impl Controller {
         }
         let tools = if t.rounds < MAX_ROUNDS { self.settings.schema.clone() } else { None };
         t.llm_done = false;
-        t.epoch = computer::epoch();
         t.llm = tokio::spawn(generate(
             self.llm.clone(),
             computer::compose(&self.history),
@@ -442,16 +437,6 @@ impl Controller {
             self.dim_line(&line);
         }
         self.billed = llm::spent();
-    }
-
-    fn halt(&mut self) {
-        if self.turn.as_ref().is_some_and(|t| t.committed) {
-            self.interrupt();
-        }
-        if let Some(tools) = &self.settings.tools {
-            tools.rest(HALTED, false);
-        }
-        self.asides.push_back(STOPPED.to_string());
     }
 
     fn verdict(&self) -> Option<&Verdict> {
@@ -736,7 +721,6 @@ impl Controller {
                 self.history.push(Message::tool(&id, text));
             }
             Event::Acted { turn } => self.on_acted(turn),
-            Event::Halt => self.halt(),
             Event::Aside(text) => self.asides.push_back(text),
             Event::Trimmed { cut, system } => {
                 self.trimming = false;
@@ -753,6 +737,7 @@ impl Controller {
         log::debug!("partial: {text}");
         self.check_end();
         let raw = content_words(&text);
+        halting(&raw);
         let text = self.unechoed(text);
         let words = content_words(&text);
         self.stream_words = raw.clone();
@@ -788,6 +773,7 @@ impl Controller {
         log::debug!("eou: {text} (speech end {speech_end_ms:?} ms)");
         self.check_end();
         let raw = content_words(&text);
+        halting(&raw);
         let text = self.unechoed(text);
         let words = content_words(&text);
         let speech_end = speech_end_ms.and_then(|ms| self.clock.wall(ms));
@@ -851,8 +837,9 @@ impl Controller {
         if !waiting.is_empty() {
             stamp.push_str(&format!("; {WAITING} {}", waiting.join(" ")));
         }
-        if computer::running() {
-            stamp.push_str(&format!("; {WORKING}"));
+        let working = computer::working();
+        if !working.is_empty() {
+            stamp.push_str(&format!("; {WORKING} {}", working.join(", ")));
         }
         if let Some(seen) = computer::noticed().filter(|_| !words.is_empty()) {
             stamp.push_str(&format!("; {seen}"));
@@ -892,7 +879,6 @@ impl Controller {
             acting: None,
             rounds: 0,
             hush: false,
-            epoch: computer::epoch(),
             said: String::new(),
             started: now,
             eou,
@@ -1063,11 +1049,7 @@ impl Controller {
         }
         self.gaps = gaps;
         self.bill();
-        if t.epoch == computer::epoch()
-            && let Some(tools) = &self.settings.tools
-        {
-            tools.rest(&t.full, true);
-        }
+        computer::hide();
         if !t.full.trim().is_empty() && remember(&mut self.history, Message::assistant(t.full)) {
             self.trim();
         }
@@ -1080,8 +1062,8 @@ impl Controller {
         t.llm.abort();
         if let Some(acting) = t.acting.take() {
             acting.abort();
-            tokio::spawn(computer::refresh());
         }
+        computer::hide();
         for id in t.owed.drain(..) {
             self.history.push(Message::tool(&id, UNDONE));
         }
@@ -1199,6 +1181,12 @@ impl Controller {
     }
 }
 
+fn halting(words: &[String]) {
+    if computer::running() && words.iter().any(|word| HALTS.contains(&word.as_str())) {
+        computer::hold();
+    }
+}
+
 fn early(t: &Turn, at: Instant) -> bool {
     t.onset.is_none_or(|o| at < o + EARLY)
 }
@@ -1294,7 +1282,6 @@ async fn act(
     events: UnboundedSender<Event>,
     listening: Arc<AtomicBool>,
 ) {
-    computer::round();
     for call in calls {
         let waited = Instant::now();
         let mut quiet = Instant::now();

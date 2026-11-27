@@ -19,7 +19,7 @@ microphone -> capture -> speech recognition -+-> controller -> reply -> voice ->
 
 | Crate | What it does |
 |---|---|
-| `crates/milo` | The binary. `main.rs` has the options and the system prompt. `controller.rs` runs the conversation. `reply.rs` streams a reply and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` has the reaction clips. `tools.rs` has the tools and memory. `computer.rs` has the tools that act in your apps. `skills.rs` keeps the notes about each app and website. `config.rs` reads the providers, the models, the API keys, and the settings. `app.rs` has what only the app needs: the log file, the first start, the answers to the settings window, and the restart. |
+| `crates/milo` | The binary. `main.rs` has the options and the system prompt. `controller.rs` runs the conversation. `reply.rs` streams a reply and shapes it for speech. `tts.rs` runs the voice thread and the gate. `react.rs` has the reaction clips. `tools.rs` has the tools and memory. `computer.rs` runs the work in your apps and in milo's browser. `skills.rs` keeps the notes about each app and website. `config.rs` reads the providers, the models, the API keys, and the settings. `app.rs` has what only the app needs: the log file, the first start, the answers to the settings window, and the restart. |
 | `crates/audio` | Microphone and speaker I/O, resampling, and the echo reference. |
 | `crates/speech` | Bindings to `swift/MiloSpeech`: echo removal and Parakeet speech recognition through FluidAudio. |
 | `crates/turn` | Voice activity detection (Silero VAD) and end-of-turn detection (Smart Turn). |
@@ -80,8 +80,8 @@ while. `--no-backchannel` turns off the listening sounds.
 
 ## Tools
 
-One model talks and acts. Every request carries the tool definitions, and the
-model answers with text, with tool calls, or with both.
+The model that talks also calls the tools. Every request carries the tool
+definitions, and the model answers with text, with tool calls, or with both.
 
 A turn runs in *rounds*. Each round is one streamed request. If the round has
 tool calls, the controller waits until the turn is committed, runs the calls
@@ -92,8 +92,8 @@ When you start to speak, milo holds the next call. When your words interrupt
 the turn, each call that hasn't returned gets a result that says that it was
 stopped, and your message goes into the same history.
 
-Some results arrive after their turn, such as a timer that finishes or an
-action that waited for your approval. When nobody is speaking, the controller
+Some results arrive after their turn, such as a timer that finishes, an
+action that waited for your approval, or work in your apps that ends. When nobody is speaking, the controller
 commits a turn whose message is `(result)` followed by the text.
 
 When you start to speak, `MiloControl` reads the name of the app in front,
@@ -110,22 +110,41 @@ system prompt.
 
 The `computer` tool takes a task name and a list of steps, and the panel
 shows them as one card. One approval covers the whole plan. The call can
-also name the app or the website to open first, which saves a round. The model then
-carries out the plan with the tools `go`, `click`, `type`, `press`, `scroll`,
-`read`, `menu`, `look`, `tab`, and `close_tab`. A round can hold several
-calls when none of them needs the result of another. If one of them fails,
-or if it changes what a later call's number stands for, milo doesn't run the
-rest of the round.
+also name the app or the website to open first, which saves a round.
 
-The model works in one *place* at a time: a browser tab, or the window of an
-app. Each request ends with a numbered list of the controls in the place, and
+After the approval, `computer.rs` starts a *worker* for the plan and returns
+at once, so the conversation goes on. A worker is a loop of requests to the
+same model, with its own system prompt, its own history, and the tools `go`,
+`click`, `type`, `press`, `scroll`, `read`, `menu`, `look`, `tab`,
+`close_tab`, and `ask`. A round can hold several calls when none of them
+needs the result of another. If one of them fails, or if it changes what a
+later call's number stands for, the worker doesn't run the rest of the
+round.
+
+Several workers can run at the same time. Each one has its own place and its
+own card in the panel. Workers in browser tabs run side by side. Only one
+worker at a time uses app windows, and the others wait for it.
+
+The model that talks sees the name and the latest action of each worker next
+to the local time in your message. With the `task` tool, it passes your
+words on to a worker, stops it, or brings its place to the front. When you
+say a word such as "stop" or "wait," the workers pause for a few seconds,
+which gives the model time to stop them.
+
+A worker calls `ask` when only you can do the next thing, such as signing in
+to a site. milo brings the place to the front, tells you, and the worker
+waits for your answer.
+
+A worker is in one *place* at a time: a tab in milo's browser, or the window
+of an app. Each request ends with a numbered list of the controls in the place, and
 with a picture of it when the model is likely to need one. A click names a
 control by its number, by its exact name, or by a description of what the
 picture shows.
 
-A task ends when the model replies without a tool call, when you click
-**Stop**, or after 40 actions. milo then asks the model to rewrite the notes
-about each place that the task worked in.
+A worker ends when the model replies without a tool call, when you stop it,
+or after 40 actions. Its last reply goes to the model that talks, which
+tells you how it went. milo then asks the model to rewrite the notes about
+each place that the worker used.
 
 ### Browser tabs
 
@@ -152,7 +171,7 @@ can change them in a macOS update.
 
 ### Test in a virtual machine
 
-`milo --task` runs one task without the voice or the panel and exits.
+`milo --task` runs one worker without the voice or the panel and exits.
 `scripts/sandbox.sh` runs it in a [Lume](https://github.com/trycua/cua)
 virtual machine named `milo-sandbox`:
 
