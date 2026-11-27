@@ -18,6 +18,8 @@ use crate::tools;
 
 const MAX_STEPS: usize = 40;
 const SETTLE: Duration = Duration::from_millis(250);
+const QUICK: Duration = Duration::from_millis(110);
+const PLAIN: Duration = Duration::from_millis(500);
 const ARRIVE: Duration = Duration::from_secs(5);
 const STILL: Duration = Duration::from_millis(300);
 const SETTLED: Duration = Duration::from_secs(3);
@@ -431,36 +433,31 @@ async fn screen(s: &mut Session) -> Seen {
     }
 }
 
-async fn settle(s: &Session, first: Duration, most: Duration) {
-    tokio::time::sleep(first).await;
-    let until = Instant::now() + most;
+async fn glimpse(s: &Session) -> Option<(Seen, bool)> {
     match &s.place {
-        Place::None => {}
+        Place::None => None,
         Place::Tab(tab) => {
-            let Some(browser) = &s.browser else { return };
-            let mut last = None;
-            while Instant::now() < until {
-                let Ok((print, loaded)) = browser.glance(tab).await else { return };
-                if loaded && last.as_ref() == Some(&print) {
-                    return;
-                }
-                last = Some(print);
-                tokio::time::sleep(STILL).await;
-            }
+            let (print, loaded) = s.browser.as_ref()?.glance(tab).await.ok()?;
+            Some((Seen::plain(print), loaded))
         }
         Place::Window => {
-            let mut last: Option<Seen> = None;
-            while Instant::now() < until {
-                let Ok(answer) = control(json!({ "op": "glance" })).await else { return };
-                let now = Seen::from(&answer);
-                let loaded = answer["loaded"].as_bool().unwrap_or(true);
-                if loaded && last.as_ref().is_some_and(|last| last.same(&now)) {
-                    return;
-                }
-                last = Some(now);
-                tokio::time::sleep(STILL).await;
-            }
+            let answer = control(json!({ "op": "glance" })).await.ok()?;
+            Some((Seen::from(&answer), answer["loaded"].as_bool().unwrap_or(true)))
         }
+    }
+}
+
+async fn settle(s: &Session, was: Option<&Seen>, most: Duration) {
+    let began = Instant::now();
+    let mut last: Option<Seen> = None;
+    while began.elapsed() < most {
+        tokio::time::sleep(QUICK).await;
+        let Some((now, loaded)) = glimpse(s).await else { return };
+        let moved = was.is_some_and(|was| !was.same(&now)) || began.elapsed() >= PLAIN;
+        if loaded && moved && last.as_ref().is_some_and(|last| last.same(&now)) {
+            return;
+        }
+        last = Some(now);
     }
 }
 
@@ -559,7 +556,13 @@ async fn sprung(s: &mut Session, from: &str) -> bool {
     true
 }
 
-async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Result<String, String>, Seen) {
+async fn click(
+    llm: &Llm,
+    s: &mut Session,
+    call: &Call,
+    before: &Seen,
+    was: Option<&Seen>,
+) -> (Result<String, String>, Seen) {
     if s.place == Place::None {
         return (Err(format!("{NOWHERE} first")), screen(s).await);
     }
@@ -584,6 +587,7 @@ async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Resul
     }
     if let Place::Tab(tab) = s.place.clone() {
         let Some(browser) = &s.browser else { return (Err(UNLINKED.to_string()), screen(s).await) };
+        let began = Instant::now();
         let did = match (spot, number) {
             (Some((x, y)), _) => browser.point(&tab, x, y).await.map(|hit| match hit.is_empty() {
                 true => format!("clicked {what}"),
@@ -601,11 +605,12 @@ async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Resul
             (None, None) => Err(anyhow!("nothing to click")),
         };
         let mut did = did.map_err(|e| format!("{e:#}"));
-        tokio::time::sleep(STILL).await;
+        settle(s, was, FOLLOWED).await;
+        tokio::time::sleep(STILL.saturating_sub(began.elapsed())).await;
         if did.is_ok() && sprung(s, &tab).await {
             did = did.map(|text| format!("{text}{SPRUNG}"));
+            settle(s, None, FOLLOWED).await;
         }
-        settle(s, SETTLE, FOLLOWED).await;
         return (did, screen(s).await);
     }
     let mut did = Err("it could not be clicked".to_string());
@@ -623,7 +628,7 @@ async fn click(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (Resul
                 break;
             }
         }
-        settle(s, SETTLE, SETTLED).await;
+        settle(s, was, SETTLED).await;
         let after = screen(s).await;
         if !after.same(before) {
             return (did, after);
@@ -808,15 +813,20 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
     let name = call.name.as_str();
     let nowhere = || Err(format!("{NOWHERE} first"));
     let place = s.place.clone();
+    let was = match name {
+        "click" | "type" | "press" | "scroll" | "menu" => glimpse(s).await.map(|(seen, _)| seen),
+        _ => None,
+    };
+    let was = was.as_ref();
     let (did, after) = match name {
         "look" => {
             tokio::time::sleep(WAITED).await;
             (Ok("looked again".to_string()), screen(s).await)
         }
-        "click" => click(llm, s, call, before).await,
+        "click" => click(llm, s, call, before, was).await,
         "go" => {
             let did = enter(s, &text("what")).await;
-            settle(s, STILL, LOADED).await;
+            settle(s, None, LOADED).await;
             (did, screen(s).await)
         }
         "tab" | "close_tab" => {
@@ -857,7 +867,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
                     }
                 }
             };
-            settle(s, SETTLE, SETTLED).await;
+            settle(s, None, SETTLED).await;
             (did, screen(s).await)
         }
         "type" => {
@@ -902,7 +912,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
                     did
                 }
             };
-            settle(s, SETTLE, if enter { FOLLOWED } else { SETTLED }).await;
+            settle(s, was, if enter { FOLLOWED } else { SETTLED }).await;
             (did, screen(s).await)
         }
         "press" | "scroll" | "menu" | "read" => {
@@ -936,7 +946,9 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
                     _ => act(json!({ "op": "menu", "path": text("path") })).await,
                 },
             };
-            settle(s, SETTLE, SETTLED).await;
+            if name != "read" {
+                settle(s, was, SETTLED).await;
+            }
             (did, screen(s).await)
         }
         _ => (Err("there is no such tool".to_string()), screen(s).await),
@@ -950,7 +962,7 @@ async fn step(llm: &Llm, s: &mut Session, call: &Call, before: &Seen) -> (String
                 s.lent = front().await;
             }
             let _ = act(json!({ "op": "raise" })).await;
-            settle(s, STILL, SETTLED).await;
+            settle(s, None, SETTLED).await;
             after = screen(s).await;
             text
         }
@@ -1168,7 +1180,7 @@ pub async fn refresh() {
     if s.task.is_none() {
         return;
     }
-    settle(s, SETTLE, SETTLED).await;
+    settle(s, None, SETTLED).await;
     let now = screen(s).await;
     show(&now, false);
     s.seen = Some(now);
