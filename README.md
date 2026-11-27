@@ -43,6 +43,8 @@ the menu bar. To quit, click the **m**, and then click **Quit Milo**.
 - "Make a new note that says call the dentist."
 - "Text Priya that I'm running late."
 - "Pause that video."
+- "What does this error mean?"
+- Select a paragraph, and say "Make this shorter."
 - "Write a hello world Python file on my desktop, and open it in VS Code."
 - "Remember that my sister's name is Priya."
 
@@ -51,9 +53,9 @@ the menu bar. To quit, click the **m**, and then click **Quit Milo**.
 milo shows a small panel in the notch at the top of your screen. To see what
 milo is doing, hold the pointer over the panel.
 
-Before milo opens an app or a website, closes a tab, writes a file, sends a
-text message, or starts a plan in your apps, the panel shows what it is about
-to do. Click **Approve** or **Decline**. If you don't answer within 45
+Before milo opens an app or a website, closes a tab, writes a file, types
+where your cursor is, sends a text message, or starts a plan in your apps,
+the panel shows what it is about to do. Click **Approve** or **Decline**. If you don't answer within 45
 seconds, milo doesn't act.
 
 | Shortcut | Action |

@@ -66,8 +66,11 @@ const HOSTING: &str = " (Milo runs in this app)";
 const SPRUNG: &str = ". It opened in a new tab, and you are in that tab now";
 const UNLINKED: &str = "your own browser cannot be reached; work in a browser's window with go, click and press";
 const OFF: &str = "none of the browsers that milo can run is installed (Chrome, Brave, Edge, Vivaldi or Chromium), so websites are read off the screen, which is slower and less exact";
+const RECENT: Duration = Duration::from_secs(20);
 const OWN: &str = " (your own browser, where websites open)";
 
+static NOTICED: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
+static TOLD: Mutex<String> = Mutex::new(String::new());
 static CURRENT: AtomicU64 = AtomicU64::new(0);
 static BLIND: AtomicBool = AtomicBool::new(false);
 static FRESH: AtomicBool = AtomicBool::new(true);
@@ -1272,6 +1275,46 @@ pub async fn finish(llm: &Llm, ended: &str, done: bool) {
     if id != 0 {
         end(llm.clone(), id, ended.to_string(), done).await;
     }
+}
+
+pub async fn notice() {
+    let seen = control(json!({ "op": "here" })).await.ok().filter(|seen| seen["app"].is_string());
+    *NOTICED.lock().unwrap_or_else(|e| e.into_inner()) = seen.map(|seen| (Instant::now(), seen));
+}
+
+pub fn noticed() -> Option<String> {
+    let held = NOTICED.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, seen) = held.as_ref().filter(|(at, _)| at.elapsed() < RECENT)?;
+    let field = |key: &str| seen[key].as_str().map(str::trim).filter(|text| !text.is_empty());
+    let mut out = format!("in front of them: {}", field("app")?);
+    if let Some(title) = field("title") {
+        out.push_str(&format!(", window \"{title}\""));
+    }
+    if let Some(address) = field("address") {
+        out.push_str(&format!(", {address}"));
+    }
+    if let Some(selected) =
+        field("selected").filter(|text| *text != TOLD.lock().unwrap_or_else(|e| e.into_inner()).as_str())
+    {
+        let more = if seen["cut"] == true { "…" } else { "" };
+        out.push_str(&format!("; they have this text selected there: \"{selected}{more}\""));
+    }
+    Some(out)
+}
+
+pub fn told() {
+    let held = NOTICED.lock().unwrap_or_else(|e| e.into_inner());
+    let selected = held.as_ref().and_then(|(_, seen)| seen["selected"].as_str()).unwrap_or_default().trim();
+    *TOLD.lock().unwrap_or_else(|e| e.into_inner()) = selected.to_string();
+}
+
+pub async fn insert(text: &str, approve: impl AsyncFnOnce(String) -> Result<()>) -> Result<String> {
+    let seen = control(json!({ "op": "here" })).await.map_err(|e| anyhow!("{e}"))?;
+    let (Some(app), Some(pid)) = (seen["app"].as_str(), seen["pid"].as_i64()) else {
+        bail!("nothing was typed, because no app is in front");
+    };
+    approve(app.to_string()).await?;
+    act(json!({ "op": "insert", "text": text, "pid": pid })).await.map_err(|e| anyhow!("{e}"))
 }
 
 pub async fn quit() {

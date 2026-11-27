@@ -38,6 +38,7 @@ enum Limit {
     static let thin: CGFloat = 3
     static let mine = CGSize(width: 1120, height: 760)
     static let read: UInt32 = 200_000
+    static let chosen = 600
 }
 
 struct Failure: Error {
@@ -1186,6 +1187,55 @@ func menu(_ request: [String: Any]) throws -> String {
     return "chose \(path)"
 }
 
+func here() -> [String: Any] {
+    guard let pid = leader(), let running = NSRunningApplication(processIdentifier: pid),
+        running.activationPolicy == .regular
+    else { return ["text": ""] }
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, Limit.brief)
+    defer { AXUIElementSetMessagingTimeout(app, Limit.messaging) }
+    var out: [String: Any] = ["text": "", "app": running.localizedName ?? "", "pid": Int(pid)]
+    if let window = element(app, kAXFocusedWindowAttribute) ?? element(app, kAXMainWindowAttribute) {
+        out["title"] = tidy(string(window, kAXTitleAttribute), Limit.name)
+        if let address = string(window, kAXDocumentAttribute) { out["address"] = tidy(address, Limit.value) }
+    }
+    if let focused = element(app, kAXFocusedUIElementAttribute),
+        string(focused, kAXSubroleAttribute) != "AXSecureTextField",
+        let chosen = string(focused, kAXSelectedTextAttribute),
+        !chosen.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+        out["selected"] = String(chosen.prefix(Limit.chosen))
+        out["cut"] = chosen.count > Limit.chosen
+    }
+    return out
+}
+
+func insert(_ request: [String: Any]) throws -> String {
+    guard let text = request["text"] as? String, !text.isEmpty else { throw Failure(text: "give the text to type") }
+    guard let pid = leader(), let running = NSRunningApplication(processIdentifier: pid) else {
+        throw Failure(text: "nothing was typed, because no app is in front")
+    }
+    let name = running.localizedName ?? "the app in front"
+    if let wanted = (request["pid"] as? NSNumber)?.int32Value, wanted != pid {
+        throw Failure(text: "nothing was typed, because \(name) is in front now, which is a different app")
+    }
+    let app = AXUIElementCreateApplication(pid)
+    guard let focused = element(app, kAXFocusedUIElementAttribute) else {
+        throw Failure(text: "nothing was typed, because the cursor is not in any text in \(name)")
+    }
+    let field = inputs.contains(kind(focused))
+    let probe = tidy(text, 24).replacingOccurrences(of: "…", with: "").lowercased()
+    if field, AXUIElementSetAttributeValue(focused, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+    {
+        usleep(Limit.read)
+        if (string(focused, kAXValueAttribute) ?? "").lowercased().contains(probe) {
+            return "typed it into \(name), where their cursor was"
+        }
+    }
+    scribe(text, pid, !field)
+    return "typed it into \(name), where their cursor was"
+}
+
 let display = CGMainDisplayID()
 
 func handle(_ request: [String: Any]) throws -> [String: Any] {
@@ -1229,9 +1279,11 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     case "look": return try look(request)
     case "peek":
         let (was, held) = (aimed, pinned)
+        let kept = (marked, labels, boxes, pane, pane_id, shot)
         defer {
             aimed = was
             pinned = held
+            (marked, labels, boxes, pane, pane_id, shot) = kept
         }
         _ = try facing()
         return try look(request)
@@ -1239,6 +1291,8 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
     case "type": return ["text": try write(request)]
     case "press": return ["text": try press(request)]
     case "menu": return ["text": try menu(request)]
+    case "here": return here()
+    case "insert": return ["text": try insert(request)]
     default: throw Failure(text: "there is no such action")
     }
 }

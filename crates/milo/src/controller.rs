@@ -636,6 +636,9 @@ impl Controller {
         match ev {
             TurnEvent::Start { seq } => {
                 self.settings.listening.store(true, Relaxed);
+                if self.settings.tools.as_ref().is_some_and(|tools| tools.hands()) {
+                    tokio::spawn(computer::notice());
+                }
                 self.voice_seq = seq;
                 self.voice_start = Some(Instant::now());
                 self.verdict = None;
@@ -851,6 +854,9 @@ impl Controller {
         if computer::running() {
             stamp.push_str(&format!("; {WORKING}"));
         }
+        if let Some(seen) = computer::noticed().filter(|_| !words.is_empty()) {
+            stamp.push_str(&format!("; {seen}"));
+        }
         let prompt = format!("[{stamp}] {text}{}", if brief { " ..." } else { "" });
         let said = self.last_react.and_then(|(at, key)| key.filter(|_| at.elapsed() < REACT_MEMORY));
         let mut messages = self.history.clone();
@@ -948,6 +954,9 @@ impl Controller {
         self.gate.commit(t.id);
         self.speech.rearm(false);
         remember(&mut self.history, Message::user(t.prompt.clone()));
+        if !t.aside {
+            computer::told();
+        }
         if t.aside {
             println!("{}", if self.dim { format!("\x1b[2m{}\x1b[0m", t.text) } else { t.text.clone() });
         } else {

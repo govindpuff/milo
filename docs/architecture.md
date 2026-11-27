@@ -96,6 +96,13 @@ Some results arrive after their turn, such as a timer that finishes or an
 action that waited for your approval. When nobody is speaking, the controller
 commits a turn whose message is `(result)` followed by the text.
 
+When you start to speak, `MiloControl` reads the name of the app in front,
+the title of its window, and the text that you have selected there. The
+controller adds them to your message next to the local time, so the model
+knows what "this" means. The `see` tool adds a picture and a list of the
+window. The `write` tool types where your cursor is, in place of the
+selected text.
+
 Memory is the file `~/.config/milo/memory.md`. Its last 60 lines go into the
 system prompt.
 

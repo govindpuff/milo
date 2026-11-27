@@ -63,6 +63,7 @@ enum Kind {
     Screen,
     Message,
     See,
+    Write,
     Media,
     CloseTab,
     ShowTab,
@@ -191,6 +192,13 @@ impl Tools {
                 Kind::See,
             ));
             list.push(tool(
+                "write",
+                "Type text where their cursor is, in the app in front of them. When they have text selected there, the new text takes its place. Use it when they ask you to write, rewrite, shorten, fix or fill in something right where they are, like tighten this paragraph or write a reply here. You write the whole text yourself, ready to use as it is.",
+                json!({ "text": { "type": "string", "description": "The exact text to put there." } }),
+                &["text"],
+                Kind::Write,
+            ));
+            list.push(tool(
                 "media",
                 "Pause, stop, resume or skip whatever video or music is playing on the person's computer, in the browser or in an app.",
                 json!({ "action": { "type": "string", "enum": ["pause", "play", "next", "previous"] } }),
@@ -299,7 +307,7 @@ impl Tools {
     fn gated(t: &Tool, call: &Call) -> bool {
         asking()
             && match t.kind {
-                Kind::Open | Kind::Computer | Kind::File | Kind::Message | Kind::Command(_) => true,
+                Kind::Open | Kind::Computer | Kind::File | Kind::Message | Kind::Write | Kind::Command(_) => true,
                 Kind::CloseTab => !Self::working(call),
                 _ => false,
             }
@@ -315,6 +323,14 @@ impl Tools {
             Kind::Computer => self.computer(&call.args).await,
             Kind::Screen => Ok(computer::perform(&self.vision, call.clone()).await),
             Kind::See => computer::see().await,
+            Kind::Write => {
+                let words = call.args.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+                if words.trim().is_empty() {
+                    bail!("there is nothing to type; ask them what it should say");
+                }
+                let shown: String = words.chars().take(FILE_SHOWN).collect();
+                computer::insert(&words, async |app| allow(&format!("Type this into {app}?"), &shown).await).await
+            }
             Kind::Media => computer::media(&text(&call.args, "action").unwrap_or_else(|| "pause".to_string())).await,
             Kind::ShowTab => {
                 let (tab, title) = computer::pick(&text(&call.args, "which").unwrap_or_default()).await?;
